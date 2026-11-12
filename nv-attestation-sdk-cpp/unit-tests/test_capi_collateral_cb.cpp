@@ -51,6 +51,7 @@
 
 #include "gtest/gtest.h"
 
+#include "nv_attestation/cmw.h"
 #include "nv_attestation/nv_ocsp.h"
 #include "nv_attestation/nv_types.h"
 #include "nv_attestation/nv_x509.h"
@@ -1072,6 +1073,30 @@ TEST(CApiCollateralCbTest, VendorJsonHintsFlowThroughAndDigestCoversTheExactSubm
     // Pretty-printed with a trailing newline: the digest must cover these exact bytes, not a
     // canonical re-serialization.
     const std::string submitted = root.dump(3) + "\n";
+
+    // The Rubin item parses with the vendor hints and survives a serialize round trip untouched.
+    nvattestation::CmwCollection parsed;
+    ASSERT_EQ(nvattestation::CmwCollection::parse(
+                  reinterpret_cast<const uint8_t *>(submitted.data()), submitted.size(),
+                  nvattestation::CmwFormat::kJson, parsed),
+              Error::Ok);
+    Bytes serialized;
+    ASSERT_EQ(parsed.serialize(nvattestation::CmwFormat::kJson, serialized), Error::Ok);
+    nvattestation::CmwCollection reparsed;
+    ASSERT_EQ(nvattestation::CmwCollection::parse(serialized.data(), serialized.size(),
+                                                  nvattestation::CmwFormat::kJson, reparsed),
+              Error::Ok);
+    ASSERT_EQ(reparsed.evidence_items().size(), 1U);
+    const nvattestation::CmwEvidenceItem &original_item = parsed.evidence_items()[0].second;
+    const nvattestation::CmwEvidenceItem &round_tripped = reparsed.evidence_items()[0].second;
+    ASSERT_NE(round_tripped.hints, nullptr);
+    EXPECT_EQ(round_tripped.hints->media_type, "application/vnd.microsoft.maa.x-ms-runtime+json");
+    EXPECT_EQ(std::string(round_tripped.hints->value.begin(), round_tripped.hints->value.end()),
+              runtime_blob);
+    EXPECT_EQ(round_tripped.evidence.value, original_item.evidence.value);
+    ASSERT_NE(round_tripped.certificate, nullptr);
+    EXPECT_EQ(round_tripped.certificate->value, original_item.certificate->value);
+    EXPECT_EQ(round_tripped.nonce, original_item.nonce);
 
     Verifier verifier;
     const auto options = offline_options(&store, real_ocsp_window().latest_this_update + 300);

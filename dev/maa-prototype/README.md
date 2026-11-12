@@ -212,6 +212,13 @@ Complete outputs: `selftest/ear-<scenario>.json` in the bundle.
 
 Run just the new tests in the container: `bash /scripts/test.sh -R CApiCollateralCb` (see `container/`).
 
+Sanitizer runs (not part of `build-bundle.ps1`): `container/build.sh asan|tsan` builds `build-asan` / `build-tsan`; run with
+`BUILD_DIR=build-asan bash /scripts/test.sh ...`. On kernels with high-entropy ASLR clang-14 sanitizers crash at startup:
+use `--repeat until-pass:6` for ASan, and for TSan start the container with `--security-opt seccomp=unconfined` and run the
+build and tests under `setarch x86_64 -R`. ASan (+LeakSanitizer): 153 related tests clean. TSan: the 8-thread test reports only a
+false positive inside the *uninstrumented* static OpenSSL 3.6 RCU hash table (`alloc_new_value` / `match_key`, reached from
+`anchor_device_chain`); with `TSAN_OPTIONS=suppressions=` (`race:alloc_new_value`, `race:match_key`) 34 tests are clean.
+
 ## Deviations from the design document
 
 * "Not found" is the existing `NVAT_RC_CACHE_OBJECT_NOT_FOUND` (14); no `NVAT_RC_COLLATERAL_NOT_FOUND`.
