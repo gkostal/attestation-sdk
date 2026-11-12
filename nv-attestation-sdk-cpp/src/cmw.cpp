@@ -18,6 +18,7 @@
 #include "nv_attestation/cmw.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -47,6 +48,28 @@ bool is_supported_certificate_media_type(const std::string &media_type) {
     return std::any_of(std::begin(kCertificateMediaTypes),
                        std::end(kCertificateMediaTypes),
                        [&](const char *known) { return media_type == known; });
+}
+
+// "application/json", or an RFC 6838 structured-syntax JSON type
+// "application/<subtype>+json" (e.g. application/vnd.microsoft.maa.x-ms-runtime+json).
+bool is_json_hints_media_type(const std::string &media_type) {
+    if (media_type == kCmwMediaJson) {
+        return true;
+    }
+    const std::string prefix = "application/";
+    const std::string suffix = "+json";
+    if (media_type.size() <= prefix.size() + suffix.size() ||
+        media_type.compare(0, prefix.size(), prefix) != 0 ||
+        media_type.compare(media_type.size() - suffix.size(), suffix.size(),
+                           suffix) != 0) {
+        return false;
+    }
+    const std::string subtype = media_type.substr(
+        prefix.size(), media_type.size() - prefix.size() - suffix.size());
+    // RFC 6838 restricted-name characters.
+    return std::all_of(subtype.begin(), subtype.end(), [](unsigned char c) {
+        return std::isalnum(c) != 0 || std::string("!#$&-^_.+").find(static_cast<char>(c)) != std::string::npos;
+    });
 }
 
 // [media-type, base64url-data]. The 3-element form (with an ind bitmap) is
@@ -165,7 +188,7 @@ Error parse_evidence_item(const nlohmann::json &node,
         if (err != Error::Ok) {
             return err;
         }
-        if (record->media_type != kCmwMediaJson) {
+        if (!is_json_hints_media_type(record->media_type)) {
             LOG_ERROR("CMW evidence item '"
                       << label << "' has unsupported hints media type: "
                       << record->media_type);

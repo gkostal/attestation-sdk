@@ -408,7 +408,7 @@ Error verify_cose_sign1(
             LOG_ERROR("Failed to generate per-cert status");
             return error;
         }
-        if (!all_certs_trusted(out_result.cert_chain_claims)) {
+        if (!all_certs_trusted(out_result.cert_chain_claims, options.ocsp_options)) {
             LOG_ERROR("Signing cert chain has an expired, revoked, or untrusted-OCSP-status certificate");
             return Error::CertChainVerificationFailure;
         }

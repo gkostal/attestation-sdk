@@ -62,6 +62,40 @@ namespace nvattestation {
 
 constexpr int MILLIS_PER_SECOND = 1000;
 
+namespace {
+
+// OCSP_basic_verify validates the responder's certificate chain at the time
+// carried by the trust store's verify param. To evaluate that at a pinned time
+// without mutating a store the caller may share across threads, hand the
+// client a per-call copy holding the same trust anchors.
+nv_unique_ptr<X509_STORE> clone_trust_store_at_time(X509_STORE* source, time_t verification_time) {
+    nv_unique_ptr<X509_STORE> copy(X509_STORE_new());
+    if (!copy) {
+        LOG_ERROR("Unable to create X509_STORE: " << get_openssl_error());
+        return nullptr;
+    }
+    STACK_OF(X509_OBJECT)* objects = X509_STORE_get0_objects(source);
+    for (int i = 0; i < sk_X509_OBJECT_num(objects); ++i) {
+        X509_OBJECT* object = sk_X509_OBJECT_value(objects, i);
+        if (X509_OBJECT_get_type(object) != X509_LU_X509) {
+            continue;
+        }
+        if (X509_STORE_add_cert(copy.get(), X509_OBJECT_get0_X509(object)) != 1) {
+            LOG_ERROR("Unable to copy trust anchor into per-call store: " << get_openssl_error());
+            return nullptr;
+        }
+    }
+    X509_VERIFY_PARAM* param = X509_STORE_get0_param(copy.get());
+    if (X509_VERIFY_PARAM_inherit(param, X509_STORE_get0_param(source)) != 1) {
+        LOG_ERROR("Unable to inherit verify params into per-call store: " << get_openssl_error());
+        return nullptr;
+    }
+    X509_VERIFY_PARAM_set_time(param, verification_time);
+    return copy;
+}
+
+}  // namespace
+
 std::string X509CertChain::to_string(FWIDType fwid_type) {
     switch (fwid_type) {
         case FWIDType::FWID_2_23_133_5_4_1:
@@ -480,7 +514,7 @@ Error X509CertChain::generate_cert_chain_claims(const OcspVerifyOptions& ocsp_ve
     out_cert_chain_claims.status = CertChainStatus::INVALID;
 
     // generate cert chain status claim
-    if (min_expiration_time < time(nullptr)) {
+    if (min_expiration_time < ocsp_verify_options.effective_time()) {
         LOG_WARN("certificate chain has expired");
         out_cert_chain_claims.status = CertChainStatus::EXPIRED;
     } else {
@@ -537,12 +571,24 @@ Error X509CertChain::collect_ocsp_responses(const OcspVerifyOptions& options, IO
         return Error::InternalError;
     }
 
+    // A pinned verification time needs a per-call store copy; otherwise the
+    // chain's own store is used unchanged (legacy).
+    nv_unique_ptr<X509_STORE> pinned_trust_store;
+    const nv_unique_ptr<X509_STORE>* ocsp_trust_store = &m_trust_store;
+    if (options.verification_time != 0) {
+        pinned_trust_store = clone_trust_store_at_time(m_trust_store.get(), options.verification_time);
+        if (!pinned_trust_store) {
+            return Error::InternalError;
+        }
+        ocsp_trust_store = &pinned_trust_store;
+    }
+
     for (int subject_idx = (int)m_certs.size() - 2; subject_idx >= start_indx; --subject_idx) {
         LOG_DEBUG("Processing cert: subject_idx" << subject_idx << ". " << get_cert_subject_issuer_str(m_certs[subject_idx].get()));
         int issuer_idx = subject_idx + 1;
 
         NvOcspResponse ocsp_resp;
-        Error error = client.get_ocsp_response(m_certs[subject_idx], m_certs[issuer_idx], ocsp_verify_intermediates, m_trust_store, ocsp_resp);
+        Error error = client.get_ocsp_response(m_certs[subject_idx], m_certs[issuer_idx], ocsp_verify_intermediates, *ocsp_trust_store, ocsp_resp);
         if (error != Error::Ok) {
             return error;
         }
@@ -632,7 +678,7 @@ Error X509CertChain::generate_ocsp_claims(const OcspVerifyOptions& ocsp_verify_o
     return Error::Ok;
 }
 
-bool all_certs_trusted(const std::vector<PerCertStatus>& chain) {
+bool all_certs_trusted(const std::vector<PerCertStatus>& chain, const OcspVerifyOptions& options) {
     // No ocsp data or NOT_CHECKED means not applicable. A genuinely failed
     // query must be marked ERROR by the caller, not left null.
     for (size_t i = 0; i < chain.size(); ++i) {
@@ -643,8 +689,13 @@ bool all_certs_trusted(const std::vector<PerCertStatus>& chain) {
         if (!cert.ocsp || cert.ocsp->crl_status == OCSPStatus::NOT_CHECKED) {
             continue;
         }
-        if (cert.ocsp->crl_status != OCSPStatus::GOOD ||
-            !cert.ocsp->nonce_matches || !cert.ocsp->response_valid) {
+        if (cert.ocsp->crl_status != OCSPStatus::GOOD || !cert.ocsp->response_valid) {
+            return false;
+        }
+        if (options.require_nonce && !cert.ocsp->nonce_matches) {
+            return false;
+        }
+        if (options.enforce_next_update && cert.ocsp->response_expired) {
             return false;
         }
     }
@@ -697,7 +748,7 @@ Error X509CertChain::generate_per_cert_status(const OcspVerifyOptions& ocsp_opti
         return Error::InternalError;
     }
 
-    time_t now = time(nullptr);
+    time_t now = ocsp_options.effective_time();
     out_statuses.resize(m_certs.size());
 
     for (size_t i = 0; i < m_certs.size(); ++i) {

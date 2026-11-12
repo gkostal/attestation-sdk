@@ -684,4 +684,104 @@ Error NvHttpOcspCacheClient::get_cache_key(
     OPENSSL_free(cert_id_data);
     return Error::Ok;
 }
+
+Error ocsp_collateral_lookup_key(const OCSP_CERTID* sha256_cert_id,
+                                 std::string& out_lookup_key) {
+    if (sha256_cert_id == nullptr) {
+        return Error::BadArgument;
+    }
+    ASN1_OBJECT* hash_algorithm = nullptr;
+    ASN1_OCTET_STRING* issuer_key_hash = nullptr;
+    ASN1_INTEGER* serial = nullptr;
+    // The out pointers alias the CertID's internals; OpenSSL keeps ownership.
+    if (OCSP_id_get0_info(nullptr, &hash_algorithm, &issuer_key_hash, &serial,
+                          const_cast<OCSP_CERTID*>(sha256_cert_id)) != 1 ||
+        issuer_key_hash == nullptr || serial == nullptr) {
+        LOG_ERROR("Unable to read OCSP_CERTID fields: " << get_openssl_error());
+        return Error::InternalError;
+    }
+
+    const unsigned char* key_hash_data = ASN1_STRING_get0_data(issuer_key_hash);
+    const unsigned char* serial_data = ASN1_STRING_get0_data(serial);
+    const int key_hash_len = ASN1_STRING_length(issuer_key_hash);
+    const int serial_len = ASN1_STRING_length(serial);
+    if (key_hash_len <= 0 || serial_len < 0) {
+        return Error::InternalError;
+    }
+
+    std::string serial_hex = to_hex_string(std::vector<uint8_t>(serial_data, serial_data + serial_len));
+    const std::size_t first_nonzero = serial_hex.find_first_not_of('0');
+    serial_hex = first_nonzero == std::string::npos ? "0" : serial_hex.substr(first_nonzero);
+
+    out_lookup_key =
+        to_hex_string(std::vector<uint8_t>(key_hash_data, key_hash_data + key_hash_len)) +
+        "_" + serial_hex;
+    return Error::Ok;
+}
+
+Error CallbackOcspClient::get_ocsp_response(
+    const nv_unique_ptr<X509>& subject_cert,
+    const nv_unique_ptr<X509>& issuer_cert,
+    const nv_unique_ptr<stack_st_X509>& intermediates,
+    const nv_unique_ptr<X509_STORE>& trust_store,
+    NvOcspResponse& out_ocsp_response
+) {
+    out_ocsp_response = NvOcspResponse{};
+
+    if (NvHttpOcspClient::first_ocsp_responder_url(subject_cert.get()).empty()) {
+        LOG_DEBUG("OCSP: subject cert has no AIA responder URL; skipping "
+                  "revocation check for this cert");
+        out_ocsp_response.skipped = true;
+        return Error::Ok;
+    }
+
+    nv_unique_ptr<OCSP_CERTID> cert_id;
+    Error error = NvHttpOcspClient::create_cert_id(
+        OcspCertIdHashAlgorithm::Sha256, subject_cert.get(), issuer_cert.get(), cert_id);
+    if (error != Error::Ok) {
+        return error;
+    }
+    std::string lookup_key;
+    error = ocsp_collateral_lookup_key(cert_id.get(), lookup_key);
+    if (error != Error::Ok) {
+        return error;
+    }
+
+    std::vector<uint8_t> response_der;
+    error = m_provider.get_collateral(CollateralKind::OcspResponse, lookup_key, response_der);
+    if (error == Error::CacheObjectNotFound || (error == Error::Ok && response_der.empty())) {
+        LOG_WARN("OCSP: no cached response available for lookup key " << lookup_key << " ("
+                 << get_cert_subject_issuer_str(subject_cert.get()) << ")");
+        return Error::OcspServerError;
+    }
+    if (error != Error::Ok) {
+        LOG_ERROR("OCSP: collateral lookup failed for key " << lookup_key << ": " << to_string(error));
+        return Error::InternalError;
+    }
+
+    nv_unique_ptr<OCSP_BASICRESP> basic_response;
+    error = NvHttpOcspClient::get_ocsp_response_from_raw(
+        std::string(response_der.begin(), response_der.end()), basic_response);
+    if (error != Error::Ok) {
+        return error;
+    }
+
+    nv_unique_ptr<OCSP_REQUEST> no_request;
+    error = NvHttpOcspClient::validate_ocsp_response(no_request, basic_response, intermediates, trust_store);
+    if (error == Error::Ok) {
+        out_ocsp_response.response_valid = true;
+    } else if (error == Error::OcspInvalidResponse) {
+        // Still extract the status below so e.g. a revoked cert is reported
+        // as such, just with response_valid=false.
+        out_ocsp_response.response_valid = false;
+    } else {
+        return error;
+    }
+
+    // A cached response is shared across requests, so it can never answer a
+    // fresh nonce.
+    out_ocsp_response.nonce_matches = false;
+
+    return NvHttpOcspClient::get_ocsp_status(basic_response, cert_id, out_ocsp_response);
+}
 }

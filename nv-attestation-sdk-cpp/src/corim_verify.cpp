@@ -1292,11 +1292,13 @@ Error LocalCorimVerifier::anchor_device_chain(const std::string &chain_pem,
 Error LocalCorimVerifier::verify_coev_signature(
     const std::vector<uint8_t> &coev_bytes,
     const std::shared_ptr<IOcspHttpClient> &ocsp_client,
+    const OcspVerifyOptions &ocsp_options,
     std::vector<uint8_t> &out_payload,
     std::vector<PerCertStatus> &out_cert_claims) const {
     CoseSign1VerifyOptions cose_opts;
     cose_opts.root_cert_pem = m_rim_signing_root;
     cose_opts.verify_ocsp = (ocsp_client != nullptr);
+    cose_opts.ocsp_options = ocsp_options;
     NvHttpOcspClient ocsp_placeholder;
     IOcspHttpClient &ocsp_ref =
         ocsp_client ? *ocsp_client
@@ -1329,6 +1331,21 @@ Error LocalCorimVerifier::add_device_identity_trust_root_pem(std::string pem) {
         return Error::BadArgument;
     }
     m_device_identity_roots.push_back(std::move(pem));
+    return Error::Ok;
+}
+
+Error LocalCorimVerifier::set_device_identity_trust_roots_pem(std::vector<std::string> pems) {
+    if (pems.empty()) {
+        LOG_ERROR("at least one device-identity trust root is required");
+        return Error::BadArgument;
+    }
+    for (const auto &pem : pems) {
+        if (pem.empty() || !x509_from_cert_string(pem)) {
+            LOG_ERROR("device-identity trust root is not a parseable PEM certificate");
+            return Error::BadArgument;
+        }
+    }
+    m_device_identity_roots = std::move(pems);
     return Error::Ok;
 }
 
@@ -1495,20 +1512,36 @@ void to_json(nlohmann::json &json_out, const CorimAttestationResult &result) {
 namespace {
 std::vector<PerCertStatus>
 collect_per_cert_status(const X509CertChain &chain,
-                        const std::shared_ptr<IOcspHttpClient> &ocsp_client) {
+                        const std::shared_ptr<IOcspHttpClient> &ocsp_client,
+                        const OcspVerifyOptions &ocsp_options) {
     std::vector<PerCertStatus> statuses;
-    if (chain.generate_per_cert_status(OcspVerifyOptions(), ocsp_client.get(), statuses) != Error::Ok) {
+    if (chain.generate_per_cert_status(ocsp_options, ocsp_client.get(), statuses) != Error::Ok) {
         LOG_WARN("OCSP collection failed; per-cert OCSP data will be absent");
     }
     return statuses;
 }
 
+// Translates the per-call options into the OCSP policy the chain/cose layers
+// consume. Null options keep the legacy defaults.
+OcspVerifyOptions make_ocsp_options(const VerifyCallOptions *call_options) {
+    OcspVerifyOptions options;
+    if (call_options != nullptr) {
+        options.require_nonce = call_options->require_ocsp_nonce;
+        options.enforce_next_update = call_options->enforce_ocsp_next_update;
+        options.verification_time = static_cast<time_t>(call_options->verification_time);
+    }
+    return options;
+}
+
 // item.hints is untrusted; a missing hint or fwversion key is not a fault
-// (out_fw_version stays empty) -- only malformed JSON errors.
+// (out_fw_version stays empty) -- only malformed JSON errors. Only plain
+// application/json hints are interpreted here; vendor-specific
+// application/*+json hints (e.g. MAA's x-ms-runtime tunnel) belong to other
+// consumers and are ignored.
 Error extract_firmware_version_hint(const CmwEvidenceItem &item,
                                     std::string &out_fw_version) {
     out_fw_version.clear();
-    if (!item.hints) {
+    if (!item.hints || item.hints->media_type != kCmwMediaJson) {
         return Error::Ok;
     }
     nlohmann::json hints_json;
@@ -1608,13 +1641,27 @@ Error fetched_coev_error(Error err) {
 } // namespace
 
 EvidenceItemAppraisal LocalCorimVerifier::appraise_item(
-    const std::string &label, const CmwEvidenceItem &item) const {
+    const std::string &label, const CmwEvidenceItem &item,
+    const VerifyCallOptions *call_options) const {
     EvidenceItemAppraisal appraisal;
     appraisal.label = label;
 
-    // Revocation gates the injected client; disabled => not consulted.
-    const std::shared_ptr<IOcspHttpClient> ocsp_client =
-        m_verify_revocation ? m_ocsp_client : nullptr;
+    // Per-call collateral replaces every network/file fetch below. It lives on
+    // the caller's options (never on this shared verifier), so concurrent
+    // calls with different collateral cannot interfere.
+    const ICollateralProvider *collateral =
+        call_options != nullptr ? call_options->collateral : nullptr;
+    const OcspVerifyOptions ocsp_options = make_ocsp_options(call_options);
+
+    // Revocation gates the OCSP collaborator; disabled => not consulted. With
+    // per-call collateral, OCSP responses are served from it (never from the
+    // verifier's own, possibly network-backed, client).
+    std::shared_ptr<IOcspHttpClient> ocsp_client;
+    if (m_verify_revocation) {
+        ocsp_client = collateral != nullptr
+            ? std::make_shared<CallbackOcspClient>(*collateral)
+            : m_ocsp_client;
+    }
 
     const IEvidenceHandler *handler =
         find_evidence_handler(item.evidence.media_type);
@@ -1674,7 +1721,7 @@ EvidenceItemAppraisal LocalCorimVerifier::appraise_item(
 
             appraisal.evidence.cert_chain =
                 std::make_unique<std::vector<PerCertStatus>>(
-                    collect_per_cert_status(device_chain, ocsp_client));
+                    collect_per_cert_status(device_chain, ocsp_client, ocsp_options));
             LOG_INFO("[" << label << "] device cert chain: "
                          << appraisal.evidence.cert_chain->size() << " certs");
         }
@@ -1684,7 +1731,7 @@ EvidenceItemAppraisal LocalCorimVerifier::appraise_item(
     Error extract_err = handler->verify_and_extract_ects(
         item, device_chain, m_evidence_handler_settings, verification);
     bool cert_chain_trusted = !appraisal.evidence.cert_chain ||
-        all_certs_trusted(*appraisal.evidence.cert_chain);
+        all_certs_trusted(*appraisal.evidence.cert_chain, ocsp_options);
     appraisal.evidence.signature_verified =
         chain_anchored && verification.signature_valid && cert_chain_trusted;
     appraisal.evidence.parsed = verification.parsed;
@@ -1833,7 +1880,7 @@ EvidenceItemAppraisal LocalCorimVerifier::appraise_item(
         std::string effective_url;
         Error fetch_err = m_corim_store.fetch_with_coev(
             url, rim_bytes, coev_bytes, coev_present, coev_sha256,
-            &effective_url);
+            &effective_url, collateral);
         if (fetch_err != Error::Ok) {
             LOG_ERROR("[" << label << "] RIM fetch failed: raw URL=" << url
                           << " effective URL=" << effective_url);
@@ -1879,6 +1926,7 @@ EvidenceItemAppraisal LocalCorimVerifier::appraise_item(
             CoseSign1VerifyOptions cose_opts;
             cose_opts.root_cert_pem = m_rim_signing_root;
             cose_opts.verify_ocsp = (ocsp_client != nullptr);
+            cose_opts.ocsp_options = ocsp_options;
             // parse_signed_corim takes the client by reference; when OCSP is
             // off, verify_ocsp is false and this stand-in is never consulted.
             NvHttpOcspClient ocsp_placeholder;
@@ -1929,7 +1977,8 @@ EvidenceItemAppraisal LocalCorimVerifier::appraise_item(
             if (m_verify_coev_signature) {
                 std::vector<PerCertStatus> coev_cert_claims;
                 coev_err = verify_coev_signature(coev_bytes, ocsp_client,
-                                                 coev_payload, coev_cert_claims);
+                                                 ocsp_options, coev_payload,
+                                                 coev_cert_claims);
                 // Retain cert-chain claims even on failure (e.g. a revoked
                 // signer), so the EAR still shows which cert was at fault.
                 if (!coev_cert_claims.empty()) {
@@ -2120,7 +2169,8 @@ Error LocalCorimVerifier::verify_cmw(const uint8_t *cmw_data,
                                      CorimAttestationResult &out_result,
                                      const DetachedEATOptions *ear_signing_options,
                                      std::string *out_ear_jwt,
-                                     std::string *out_ear_json) const {
+                                     std::string *out_ear_json,
+                                     const VerifyCallOptions *call_options) const {
     out_result = CorimAttestationResult();
     if (cmw_data == nullptr) {
         LOG_ERROR("verify_cmw called with null cmw_data");
@@ -2165,7 +2215,7 @@ Error LocalCorimVerifier::verify_cmw(const uint8_t *cmw_data,
 
     for (const auto &labelled : cmw.evidence_items()) {
         out_result.items.push_back(
-            appraise_item(labelled.first, labelled.second));
+            appraise_item(labelled.first, labelled.second, call_options));
     }
 
     if (out_ear_jwt != nullptr || out_ear_json != nullptr) {

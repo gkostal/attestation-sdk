@@ -25,6 +25,7 @@
 #include <openssl/conf.h>
 
 #include "nv_types.h"
+#include "nv_attestation/collateral.h"
 #include "nv_attestation/error.h"
 #include "nv_attestation/verify.h"
 #include "nv_attestation/nv_http.h"
@@ -185,14 +186,8 @@ public:
         const std::vector<std::pair<std::string, std::string>>& rules,
         const std::string& url);
 
-private:
-    HttpOptions m_http_options;
-    std::string m_ocsp_default_url;
-    NvHttpClient m_http_client;
-    OcspClientOptions m_options;
-    bool m_use_cert_aia_responder = false;
-    std::vector<std::pair<std::string, std::string>> m_url_rewrites;
-
+    // OCSP request/response helpers. Public so CallbackOcspClient (which
+    // validates cached responses without any HTTP transfer) can reuse them.
     static Error create_cert_id(
         OcspCertIdHashAlgorithm algorithm,
         X509* subject_cert,
@@ -200,18 +195,14 @@ private:
         nv_unique_ptr<OCSP_CERTID>& out_id
     );
 
-    Error build_request(
-        X509* subject_cert,
-        X509* issuer_cert,
-        nv_unique_ptr<OCSP_REQUEST>& out_request,
-        nv_unique_ptr<OCSP_CERTID>& out_response_lookup_id
-    ) const;
-
     static Error get_ocsp_response_from_raw(
         const std::string& ocsp_response_raw,
         nv_unique_ptr<OCSP_BASICRESP>& out_ocsp_response
     );
 
+    // Verifies the responder signature and chain (OCSP_basic_verify) at the
+    // time carried by trust_store's verify param. ocsp_req is unused and may be
+    // an empty pointer.
     static Error validate_ocsp_response(
         nv_unique_ptr<OCSP_REQUEST>& ocsp_req,
         nv_unique_ptr<OCSP_BASICRESP>& basic_resp,
@@ -225,6 +216,21 @@ private:
         NvOcspResponse& out_ocsp_response
     );
 
+private:
+    HttpOptions m_http_options;
+    std::string m_ocsp_default_url;
+    NvHttpClient m_http_client;
+    OcspClientOptions m_options;
+    bool m_use_cert_aia_responder = false;
+    std::vector<std::pair<std::string, std::string>> m_url_rewrites;
+
+    Error build_request(
+        X509* subject_cert,
+        X509* issuer_cert,
+        nv_unique_ptr<OCSP_REQUEST>& out_request,
+        nv_unique_ptr<OCSP_CERTID>& out_response_lookup_id
+    ) const;
+
     // Grants the get_ocsp_status unit tests direct access, so timestamp
     // parsing can be exercised without a live/mocked OCSP HTTP round trip.
     friend class NvHttpOcspClientStatusTest_GoodStatusAllFieldsPresent_Test;
@@ -233,6 +239,44 @@ private:
     friend class NvHttpOcspClientHashTest_ConfiguredAlgorithmsBuildExpectedCertIds_Test;
     friend class NvHttpOcspCacheClient;
 
+};
+
+// Lookup key a CallbackOcspClient uses to request the cached OCSP response for
+// one certificate: "<issuerKeyHash lower hex>_<serial lower hex>".
+//  - issuerKeyHash: the SHA-256 hash of the issuer's public key (the
+//    CertID.issuerKeyHash of a SHA-256 OCSP request), 64 hex digits.
+//  - serial: the certificate serial number's magnitude in lower-case hex with
+//    all leading zeros removed ("0" for zero).
+Error ocsp_collateral_lookup_key(const OCSP_CERTID* sha256_cert_id,
+                                 std::string& out_lookup_key);
+
+/**
+ * @brief IOcspHttpClient that serves OCSP responses from a caller-supplied
+ *        ICollateralProvider instead of the network.
+ *
+ * Mirrors NvHttpOcspClient's AIA mode: a cert without an AIA OCSP responder is
+ * skipped (not checked). Otherwise the DER OCSPResponse is looked up by
+ * ocsp_collateral_lookup_key(), its signature and responder chain are
+ * verified against the supplied trust store, and its status is extracted. The
+ * response carries no nonce, so nonce_matches is always false.
+ *
+ * Cheap and per call: holds only a reference to the provider.
+ */
+class CallbackOcspClient : public IOcspHttpClient {
+public:
+    explicit CallbackOcspClient(const ICollateralProvider& provider)
+        : m_provider(provider) {}
+
+    Error get_ocsp_response(
+        const nv_unique_ptr<X509>& subject_cert,
+        const nv_unique_ptr<X509>& issuer_cert,
+        const nv_unique_ptr<stack_st_X509>& intermediates,
+        const nv_unique_ptr<X509_STORE>& trust_store,
+        NvOcspResponse& out_ocsp_response
+    ) override;
+
+private:
+    const ICollateralProvider& m_provider;
 };
 
 class NvHttpOcspCacheClient: public IOcspHttpClient {

@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "nv_attestation/cmw.h"
+#include "nv_attestation/collateral.h"
 #include "nv_attestation/corim.h"
 #include "nv_attestation/corim_evidence/corim_store.h"
 #include "nv_attestation/corim_evidence/evidence_handler_settings.h"
@@ -412,6 +413,12 @@ class LocalCorimVerifier {
     // on each CMW evidence item must anchor to one of these roots.
     Error add_device_identity_trust_root_pem(std::string pem);
 
+    // Replace the whole device-identity trust store (e.g. with a test root).
+    // Every PEM must parse as a certificate and at least one is required;
+    // on any failure the existing roots are left untouched. Like all
+    // configuration, not safe to call concurrently with verify_cmw.
+    Error set_device_identity_trust_roots_pem(std::vector<std::string> pems);
+
     // When disabled, the injected OCSP client is not consulted and chains are
     // treated as not revoked.
     void set_verify_revocation(bool enabled);
@@ -455,15 +462,23 @@ class LocalCorimVerifier {
     // Both out_ear_jwt/out_ear_json null skips EAR mapping entirely. Signing
     // (ear_signing_options) only affects out_ear_jwt; out_ear_json is always
     // the unsigned EAR, so callers can read claims without decoding the JWT.
+    //
+    // call_options (optional, per call) supplies caller-owned collateral
+    // (CoRIMs and OCSP responses, with no network/file I/O of the verifier's
+    // own) plus OCSP-nonce/nextUpdate policy and a pinned verification time.
+    // Null reproduces the legacy behavior exactly. Never mutates the verifier,
+    // so concurrent calls with different call_options are safe.
     Error verify_cmw(const uint8_t *cmw_data, std::size_t cmw_len,
                      CmwFormat format, CorimAttestationResult &out_result,
                      const DetachedEATOptions *ear_signing_options = nullptr,
                      std::string *out_ear_jwt = nullptr,
-                     std::string *out_ear_json = nullptr) const;
+                     std::string *out_ear_json = nullptr,
+                     const VerifyCallOptions *call_options = nullptr) const;
 
   private:
     EvidenceItemAppraisal
-    appraise_item(const std::string &label, const CmwEvidenceItem &item) const;
+    appraise_item(const std::string &label, const CmwEvidenceItem &item,
+                  const VerifyCallOptions *call_options) const;
 
     // Validate a device-identity cert chain against the configured roots.
     Error anchor_device_chain(const std::string &chain_pem,
@@ -472,6 +487,7 @@ class LocalCorimVerifier {
     // Verify a fetched CoEV's COSE_Sign1 signature and return its payload.
     Error verify_coev_signature(const std::vector<uint8_t> &coev_bytes,
                                 const std::shared_ptr<IOcspHttpClient> &ocsp_client,
+                                const OcspVerifyOptions &ocsp_options,
                                 std::vector<uint8_t> &out_payload,
                                 std::vector<PerCertStatus> &out_cert_claims) const;
 

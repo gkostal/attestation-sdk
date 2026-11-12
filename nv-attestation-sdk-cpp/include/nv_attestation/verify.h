@@ -18,6 +18,7 @@
 #pragma once
 
 #include "nvat.h"
+#include <ctime>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -45,6 +46,18 @@ namespace nvattestation
 
    public:
       OcspVerifyOptions() {}
+
+      // Per-call appraisal knobs. The defaults are the legacy behavior: the
+      // OCSP nonce must match, an expired nextUpdate is reported but not
+      // enforced, and "now" is the wall clock.
+      bool require_nonce = true;
+      bool enforce_next_update = false;
+      // Unix epoch seconds; 0 selects the wall clock.
+      time_t verification_time = 0;
+
+      time_t effective_time() const {
+         return verification_time != 0 ? verification_time : time(nullptr);
+      }
    };
 
    class EvidencePolicy {

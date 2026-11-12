@@ -197,9 +197,12 @@ struct PerCertStatus {
 };
 
 // True only if every cert is unexpired and, when it has a known OCSP
-// status, that status is GOOD with a matching nonce and valid response.
-// No data or NOT_CHECKED is treated as not applicable.
-bool all_certs_trusted(const std::vector<PerCertStatus>& chain);
+// status, that status is GOOD with a valid response. No data or NOT_CHECKED is
+// treated as not applicable. By default (legacy) the OCSP nonce must also
+// match and nextUpdate is not enforced; options.require_nonce /
+// options.enforce_next_update change that per call.
+bool all_certs_trusted(const std::vector<PerCertStatus>& chain,
+                       const OcspVerifyOptions& options = OcspVerifyOptions());
 
 class X509CertChain{
     private:

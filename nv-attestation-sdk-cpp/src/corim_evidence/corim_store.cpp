@@ -17,6 +17,7 @@
 
 #include "nv_attestation/corim_evidence/corim_store.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -95,7 +96,71 @@ Error read_file(const std::string &raw_url, const std::string &effective_url,
     return Error::Ok;
 }
 
+constexpr const char *kRimServiceRimPrefix =
+    "https://rim.attestation.nvidia.com/v1/rim/";
+
+// Serves a CoRIM from the caller's collateral provider: no network, no file
+// I/O, no rewrite, and no cache (the provider is per-call, so a shared cache
+// entry from another call's collateral must not satisfy it).
+Error fetch_from_collateral(const ICollateralProvider &collateral,
+                            const std::string &raw_url,
+                            std::vector<uint8_t> &out_corim_bytes,
+                            std::vector<uint8_t> &out_coev_bytes,
+                            bool &out_coev_present,
+                            std::string &out_coev_sha256) {
+    std::string lookup_key;
+    Error err = rim_lookup_key_from_locator(raw_url, lookup_key);
+    if (err != Error::Ok) {
+        LOG_ERROR("RIM fetch: rejected rim-locator for collateral lookup: raw URL="
+                  << raw_url);
+        return err;
+    }
+
+    std::vector<uint8_t> bytes;
+    err = collateral.get_collateral(CollateralKind::Corim, lookup_key, bytes);
+    if (err == Error::CacheObjectNotFound || (err == Error::Ok && bytes.empty())) {
+        LOG_ERROR("RIM fetch: collateral store has no CoRIM for key '"
+                  << lookup_key << "' (raw URL=" << raw_url << ")");
+        return Error::RimNotFound;
+    }
+    if (err != Error::Ok) {
+        LOG_ERROR("RIM fetch: collateral lookup failed for key '"
+                  << lookup_key << "': " << to_string(err));
+        return Error::RimInternalError;
+    }
+
+    // A RIM-service JSON envelope starts with '{' (CoRIM CBOR/COSE never does).
+    const auto first = std::find_if(bytes.begin(), bytes.end(), [](uint8_t c) {
+        return c != ' ' && c != '\t' && c != '\r' && c != '\n';
+    });
+    if (first != bytes.end() && *first == '{') {
+        return extract_rim_service_bytes_with_coev(
+            raw_url, std::string(bytes.begin(), bytes.end()), out_corim_bytes,
+            out_coev_bytes, out_coev_present, out_coev_sha256);
+    }
+    out_corim_bytes = std::move(bytes);
+    return Error::Ok;
+}
+
 } // namespace
+
+Error rim_lookup_key_from_locator(const std::string &url, std::string &out_key) {
+    const std::string prefix(kRimServiceRimPrefix);
+    if (!starts_with(url, prefix)) {
+        out_key = url;
+        return Error::Ok;
+    }
+    const std::string id = url.substr(prefix.size());
+    const bool has_forbidden_char =
+        std::any_of(id.begin(), id.end(), [](unsigned char c) {
+            return c == '/' || c == '\\' || c == '?' || c == '#' || c < 0x20 || c == 0x7f;
+        });
+    if (id.empty() || has_forbidden_char || id.find("..") != std::string::npos) {
+        return Error::BadArgument;
+    }
+    out_key = id;
+    return Error::Ok;
+}
 
 CorimStore::CorimStore()
     : CorimStore(HttpOptions{}) {}
@@ -185,9 +250,10 @@ Error CorimStore::fetch_with_coev(const std::string &url,
                                     std::vector<uint8_t> &out_coev_bytes,
                                     bool &out_coev_present,
                                     std::string &out_coev_sha256,
-                                    std::string *out_effective_url) const {
+                                    std::string *out_effective_url,
+                                    const ICollateralProvider *collateral) const {
     return fetch_impl(url, out_corim_bytes, out_coev_bytes, out_coev_present,
-                       out_coev_sha256, out_effective_url);
+                       out_coev_sha256, out_effective_url, collateral);
 }
 
 Error CorimStore::fetch_impl(const std::string &url,
@@ -195,7 +261,8 @@ Error CorimStore::fetch_impl(const std::string &url,
                               std::vector<uint8_t> &out_coev_bytes,
                               bool &out_coev_present,
                               std::string &out_coev_sha256,
-                              std::string *out_effective_url) const {
+                              std::string *out_effective_url,
+                              const ICollateralProvider *collateral) const {
     out_coev_present = false;
     out_coev_bytes.clear();
     out_coev_sha256.clear();
@@ -209,6 +276,14 @@ Error CorimStore::fetch_impl(const std::string &url,
     }
     if (resolve_err != Error::Ok) {
         return resolve_err;
+    }
+
+    // The allowlist above has vetted the raw URL; the collateral provider
+    // replaces everything that follows (rewrites, cache, HTTP, files).
+    if (collateral != nullptr) {
+        return fetch_from_collateral(*collateral, url, out_corim_bytes,
+                                     out_coev_bytes, out_coev_present,
+                                     out_coev_sha256);
     }
 
     if (m_cache) {

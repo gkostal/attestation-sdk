@@ -28,6 +28,12 @@ extern "C" {
 #include <stdio.h>
 #include <time.h>
 
+// Keep every declaration below exported even when libnvat is built with
+// -fvisibility=hidden (NVAT_HIDE_INTERNAL_SYMBOLS); a no-op for consumers.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC visibility push(default)
+#endif
+
 // === Package Version ===
 
 #define NVAT_VERSION_STRING "@PROJECT_VERSION@"
@@ -100,7 +106,8 @@ const char* nvat_rc_to_string(nvat_rc_t rc);
 #define NVAT_RC_OVERALL_RESULT_FALSE           (12)
 /// @brief Indicates an error with JSON serialization/deserialization.
 #define NVAT_RC_JSON_SERIALIZATION_ERROR       (13)
-/// @brief Indicates an error occurred when fetching an object from the cache.
+/// @brief Indicates an error occurred when fetching an object from the cache. Also the value an
+///        @ref nvat_collateral_cb_t returns to say the requested collateral is not in the caller's store.
 #define NVAT_RC_CACHE_OBJECT_NOT_FOUND         (14)
 /// @brief Indicates a verifier or attestation service rate-limited the request.
 #define NVAT_RC_RATE_LIMITED                   (15)
@@ -2046,9 +2053,257 @@ nvat_rc_t nvat_local_corim_verifier_set_default_hash_algorithms(
     size_t num_algs
 );
 
+/**
+ * @brief Replace the verifier's device-identity trust anchors.
+ *
+ * By default the verifier trusts the NVIDIA Device Identity CA. This replaces
+ * that set with the given PEM certificates, e.g. so a test can inject a test CA
+ * root. Every entry must parse as a PEM certificate and at least one is
+ * required; on any failure the existing roots are left untouched.
+ *
+ * Configuration call: do not run it concurrently with a verify call on the
+ * same verifier.
+ *
+ * @param verifier Handle from @ref nvat_local_corim_verifier_create.
+ * @param root_cert_pems Array of @p num_roots NUL-terminated PEM certificates.
+ * @param num_roots Number of entries in @p root_cert_pems (>= 1).
+ * @return @ref NVAT_RC_BAD_ARGUMENT for a NULL argument, num_roots == 0 or an
+ *         unparseable certificate.
+ */
+nvat_rc_t nvat_local_corim_verifier_set_device_identity_roots(
+    nvat_local_corim_verifier_t verifier,
+    const char* const* root_cert_pems,
+    size_t num_roots
+);
+
+/** @defgroup collateral_callback Offline Collateral (per-call)
+ *
+ * @brief Let the caller supply every CoRIM and OCSP response a verification
+ *        needs, so libnvat performs no network or file I/O of its own.
+ *
+ * Install a callback with @ref nvat_verify_call_options_set_collateral_callback
+ * and verify with @ref nvat_local_corim_verifier_verify_cmw_ex. The callback is
+ * invoked synchronously on the verifying thread, so the same (shared) verifier
+ * can serve concurrent calls that each carry their own callback + user data.
+ *
+ * @{
+ */
+
+/**
+ * @brief Heap-allocated byte buffer owned by libnvat.
+ *
+ * Carries binary collateral across the C ABI without cross-module free
+ * problems: it is always allocated and released by libnvat
+ * (@ref nvat_byte_buf_create / @ref nvat_byte_buf_free).
+ */
+typedef struct nvat_byte_buf_st* nvat_byte_buf_t;
+
+/**
+ * @brief Allocate a buffer holding a copy of @p data.
+ *
+ * @param out_buf On success, receives the new buffer.
+ * @param data Bytes to copy. May be NULL only when @p len is 0.
+ * @param len Number of bytes in @p data.
+ */
+nvat_rc_t nvat_byte_buf_create(
+    nvat_byte_buf_t* out_buf,
+    const uint8_t* data,
+    size_t len
+);
+
+/**
+ * @brief Free a buffer and set *buf to NULL. Safe on NULL.
+ */
+void nvat_byte_buf_free(nvat_byte_buf_t* buf);
+
+/**
+ * @brief Kind of collateral requested through an @ref nvat_collateral_cb_t.
+ */
+typedef enum {
+    /**
+     * A CoRIM referenced by the evidence's rim-locator.
+     *
+     * lookup_key: the canonical RIM id, i.e. <id> for the locator URL
+     * `https://rim.attestation.nvidia.com/v1/rim/<id>` (for example
+     * "GR100_081D_9900230000" or "NV_GPU_DRIVER_GR100_620.54"). Locators that
+     * are not of that form (a custom allowlist prefix or a backup locator) are
+     * passed through as the raw URL. The locator must still pass the CoRIM
+     * store's URL allowlist before the callback is asked.
+     *
+     * Result bytes: the raw CoRIM CBOR/COSE, or the RIM-service JSON envelope
+     * (`{"rim": "<base64>", "coev": ...}`, recognised by a leading '{').
+     */
+    NVAT_COLLATERAL_KIND_CORIM = 1,
+
+    /**
+     * A DER-encoded RFC 6960 OCSPResponse for one certificate of a device
+     * (or CoRIM-signing) chain that has an AIA OCSP responder. Certificates
+     * without an AIA OCSP responder are never requested (not checked).
+     *
+     * lookup_key: "<issuerKeyHash>_<serial>", where
+     *  - issuerKeyHash is the 32-byte SHA-256 hash of the issuer's public key
+     *    (OCSP CertID.issuerKeyHash for a SHA-256 CertID) as 64 lower-case hex
+     *    digits, and
+     *  - serial is the subject certificate's serial number as lower-case hex
+     *    with all leading zeros removed ("0" for zero).
+     * Example: serial 0x418f2e55a169f0b0e3 under an issuer whose key hash is
+     * H (64 hex digits) is requested as "<H>_418f2e55a169f0b0e3"; serial
+     * 0x02c2f9f3 becomes "<H>_2c2f9f3". The response must have been
+     * issued for a SHA-256 CertID (what an unmodified OCSP request from NVAT
+     * uses). It is verified (responder signature + chain to the verifier's
+     * trust anchors); it need not contain a nonce.
+     */
+    NVAT_COLLATERAL_KIND_OCSP_RESPONSE = 2,
+} nvat_collateral_kind_t;
+
+/**
+ * @brief Callback through which libnvat asks the caller for collateral.
+ *
+ * On success allocate the bytes with @ref nvat_byte_buf_create, store the
+ * buffer in *out_collateral and return @ref NVAT_RC_OK; libnvat takes
+ * ownership of the buffer and frees it (the callback must not). *out_collateral
+ * is NULL on entry.
+ *
+ * Return codes:
+ *  - @ref NVAT_RC_OK: *out_collateral holds the collateral.
+ *  - @ref NVAT_RC_CACHE_OBJECT_NOT_FOUND: the caller's store does not have this
+ *    item. For a CoRIM this is recorded as a RIM-not-found failure of that CoRIM
+ *    (ear_nvidia_rims[].fetched = false, status contraindicated); for an OCSP
+ *    response the certificate's ocsp_crl_status becomes "error" (contraindicated).
+ *    Neither makes the verify call itself fail.
+ *  - @ref NVAT_RC_BAD_ARGUMENT / @ref NVAT_RC_INTERNAL_ERROR (or any other
+ *    code): the lookup failed; treated like "not found" for the appraisal.
+ *
+ * The callback runs synchronously on the verifying thread and must not let a
+ * C++ exception propagate into libnvat.
+ *
+ * @param user_data The pointer given to
+ *        @ref nvat_verify_call_options_set_collateral_callback.
+ * @param kind What is being requested.
+ * @param lookup_key NUL-terminated key; see @ref nvat_collateral_kind_t.
+ *        Valid only for the duration of the call.
+ * @param out_collateral Receives the buffer on success.
+ */
+typedef nvat_rc_t (*nvat_collateral_cb_t)(
+    void* user_data,
+    nvat_collateral_kind_t kind,
+    const char* lookup_key,
+    nvat_byte_buf_t* out_collateral
+);
+
+/**
+ * @brief Per-call options for @ref nvat_local_corim_verifier_verify_cmw_ex.
+ *
+ * Read-only during a verify call; one options object may be shared by
+ * concurrent calls. Defaults: no callback, require_ocsp_nonce = true,
+ * enforce_ocsp_next_update = true, verification_time = 0 (now).
+ */
+typedef struct nvat_verify_call_options_st* nvat_verify_call_options_t;
+
+nvat_rc_t nvat_verify_call_options_create(nvat_verify_call_options_t* out_options);
+
+void nvat_verify_call_options_free(nvat_verify_call_options_t* options);
+
+/**
+ * @brief Install the collateral callback for calls using these options.
+ *
+ * With a callback installed, a verify call performs no network (libcurl) and no
+ * file I/O: CoRIMs and OCSP responses come only from the callback, whatever the
+ * verifier's CoRIM store or OCSP client are configured with. OCSP lookups
+ * happen whenever revocation checking is enabled
+ * (@ref nvat_local_corim_verifier_set_verify_revocation, default on), even if
+ * the verifier was created without an OCSP client. Passing a NULL callback
+ * removes it (libnvat fetches collateral itself again).
+ *
+ * @param user_data Opaque pointer handed back to every callback invocation.
+ */
+nvat_rc_t nvat_verify_call_options_set_collateral_callback(
+    nvat_verify_call_options_t options,
+    nvat_collateral_cb_t callback,
+    void* user_data
+);
+
+/**
+ * @brief Whether an OCSP response must echo the request nonce (default: true).
+ *
+ * Cached/pre-fetched OCSP responses (every response served through the
+ * collateral callback) carry no per-request nonce, so such callers must set
+ * this to false; with true, they are reported ocsp_nonce_matches = false and the
+ * evidence is contraindicated.
+ */
+nvat_rc_t nvat_verify_call_options_set_require_ocsp_nonce(
+    nvat_verify_call_options_t options,
+    bool require_nonce
+);
+
+/**
+ * @brief Whether an OCSP response whose nextUpdate is in the past (relative to
+ *        the verification time) makes the evidence untrusted (default: true).
+ *
+ * With false the expiry is still reported (ocsp_crl_response_expired = true)
+ * but not enforced.
+ */
+nvat_rc_t nvat_verify_call_options_set_enforce_ocsp_next_update(
+    nvat_verify_call_options_t options,
+    bool enforce_next_update
+);
+
+/**
+ * @brief Override "now" for the appraisal (Unix epoch seconds).
+ *
+ * 0 (default) uses the current system time. The time is used for certificate
+ * expiry, OCSP response expiry (nextUpdate) and validating the OCSP responder's
+ * certificate chain. (Device-chain anchoring itself never checks validity
+ * periods; expiry is reported per certificate.) The EAR's own iat/nbf/exp
+ * always use the system clock.
+ */
+nvat_rc_t nvat_verify_call_options_set_verification_time(
+    nvat_verify_call_options_t options,
+    int64_t epoch_seconds
+);
+
+/** @} collateral_callback */
+
+/**
+ * @brief Verify a CMW input collection with per-call options.
+ *
+ * Identical to @ref nvat_local_corim_verifier_verify_cmw when @p call_options
+ * is NULL. Otherwise applies the collateral callback, OCSP nonce/nextUpdate
+ * policy and verification time of @p call_options for this call only; the
+ * verifier itself is not modified, so concurrent calls on one verifier with
+ * different options are safe. As with the plain call, appraisal failures
+ * (missing/revoked/expired OCSP, missing CoRIM, tampered evidence, ...) are
+ * reported in the EAR (ear_status "contraindicated"), not as a return code.
+ *
+ * @param verifier Handle from @ref nvat_local_corim_verifier_create.
+ * @param cmw_data CMW collection bytes.
+ * @param cmw_len Length of @p cmw_data in bytes.
+ * @param format Wire format.
+ * @param call_options Per-call options, or NULL.
+ * @param ear_signing_options EAR-signing options (see
+ *        @ref nvat_local_corim_verifier_verify_cmw). May be NULL.
+ * @param out_ear_jwt Receives the EAR JWT. Free with @ref nvat_str_free. May be NULL.
+ * @param out_ear_json Receives the unsigned EAR JSON. Free with @ref nvat_str_free.
+ *        May be NULL.
+ */
+nvat_rc_t nvat_local_corim_verifier_verify_cmw_ex(
+    const nvat_local_corim_verifier_t verifier,
+    const uint8_t* cmw_data,
+    size_t cmw_len,
+    nvat_cmw_format_t format,
+    const nvat_verify_call_options_t call_options,
+    nvat_ear_signing_options_t ear_signing_options,
+    nvat_str_t* out_ear_jwt,
+    nvat_str_t* out_ear_json
+);
+
 void nvat_local_corim_verifier_free(nvat_local_corim_verifier_t* verifier);
 
 /** @} local_corim_verifier */
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC visibility pop
+#endif
 
 #ifdef __cplusplus
 }

@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "nv_attestation/collateral.h"
 #include "nv_attestation/error.h"
 #include "nv_attestation/nv_cache.h"
 #include "nv_attestation/nv_http.h"
@@ -61,12 +62,20 @@ class CorimStore {
 
     // Surfaces a CoEV payload (and sha256) from a RIM-service JSON envelope,
     // when present. Absent otherwise -- no coev field, file://, or raw CBOR/COSE.
+    //
+    // When `collateral` is non-null the CoRIM comes from it instead of the
+    // network/filesystem (no rewrite, no cache, no I/O): the raw URL must still
+    // pass the allowlist, then the canonical RIM id (see
+    // rim_lookup_key_from_locator) is looked up. Error::CacheObjectNotFound from
+    // the provider maps to Error::RimNotFound. Returned bytes are raw CBOR/COSE,
+    // or a RIM-service JSON envelope when they start with '{'.
     Error fetch_with_coev(const std::string &url,
                            std::vector<uint8_t> &out_corim_bytes,
                            std::vector<uint8_t> &out_coev_bytes,
                            bool &out_coev_present,
                            std::string &out_coev_sha256,
-                           std::string *out_effective_url = nullptr) const;
+                           std::string *out_effective_url = nullptr,
+                           const ICollateralProvider *collateral = nullptr) const;
 
   private:
     friend class LocalCorimVerifier;
@@ -83,7 +92,8 @@ class CorimStore {
                       std::vector<uint8_t> &out_coev_bytes,
                       bool &out_coev_present,
                       std::string &out_coev_sha256,
-                      std::string *out_effective_url) const;
+                      std::string *out_effective_url,
+                      const ICollateralProvider *collateral = nullptr) const;
 
     std::vector<std::string> m_allowed_prefixes;
     std::vector<std::pair<std::string, std::string>> m_rewrites;
@@ -91,5 +101,12 @@ class CorimStore {
     NvHttpClient m_http_client;
     std::shared_ptr<INvCache> m_cache;
 };
+
+// Lookup key handed to an ICollateralProvider for a rim-locator URL. For the
+// NVIDIA RIM service form "https://rim.attestation.nvidia.com/v1/rim/<id>" it
+// is the canonical RIM id "<id>"; an empty id, or one containing '/', '\\',
+// "..", '?', '#' or a control character, is rejected with Error::BadArgument.
+// Any other (allowlisted) locator URL is passed through unchanged.
+Error rim_lookup_key_from_locator(const std::string &url, std::string &out_key);
 
 } // namespace nvattestation

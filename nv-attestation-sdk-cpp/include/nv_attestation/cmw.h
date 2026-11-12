@@ -65,7 +65,9 @@ struct CmwEvidenceItem {
     std::vector<uint8_t> nonce;
     // nullptr when absent; some evidence types embed the chain in the payload.
     std::unique_ptr<CmwRecord> certificate;
-    // nullptr when absent. Untrusted, caller-supplied key-value bundle.
+    // nullptr when absent. Untrusted, caller-supplied key-value bundle. The media
+    // type is application/json or an application/*+json vendor type; the
+    // blackwell FSP firmware-version hint is only read for application/json.
     std::unique_ptr<CmwRecord> hints;
 };
 
