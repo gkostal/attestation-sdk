@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.sh text eol=lf
+*.diag text eol=lf
+*.ps1 text eol=lf
+Dockerfile text eol=lf
+*.png binary
+*.der binary
+*.cbor binary
+nv-attestation-sdk-cpp/unit-tests/testdata/sample_rims/coev/blackwell_fsp_real.diag -text
