@@ -684,4 +684,140 @@ Error NvHttpOcspCacheClient::get_cache_key(
     OPENSSL_free(cert_id_data);
     return Error::Ok;
 }
+
+Error CallbackOcspClient::compute_cert_lookup_key(
+    X509* subject_cert,
+    X509* issuer_cert,
+    std::string& out_lookup_key,
+    nv_unique_ptr<OCSP_CERTID>& out_cert_id
+) {
+    if (subject_cert == nullptr || issuer_cert == nullptr) {
+        return Error::BadArgument;
+    }
+
+    nv_unique_ptr<OCSP_CERTID> id;
+    Error error = NvHttpOcspClient::create_cert_id(
+        OcspCertIdHashAlgorithm::Sha256, subject_cert, issuer_cert, id);
+    if (error != Error::Ok) {
+        return error;
+    }
+
+    ASN1_OCTET_STRING* issuer_key_hash = nullptr;
+    ASN1_INTEGER* serial_asn1 = nullptr;
+    if (OCSP_id_get0_info(nullptr, nullptr, &issuer_key_hash, &serial_asn1, id.get()) != 1 ||
+        issuer_key_hash == nullptr || serial_asn1 == nullptr) {
+        LOG_ERROR("Failed to extract issuerKeyHash/serial from OCSP_CERTID");
+        return Error::InternalError;
+    }
+
+    const uint8_t* key_hash_ptr = ASN1_STRING_get0_data(issuer_key_hash);
+    const int key_hash_len = ASN1_STRING_length(issuer_key_hash);
+    if (key_hash_ptr == nullptr || key_hash_len <= 0) {
+        LOG_ERROR("OCSP_CERTID issuerKeyHash is empty");
+        return Error::InternalError;
+    }
+    std::vector<uint8_t> key_hash_vec(key_hash_ptr, key_hash_ptr + key_hash_len);
+
+    nv_unique_ptr<BIGNUM> serial_bn(ASN1_INTEGER_to_BN(serial_asn1, nullptr));
+    if (!serial_bn) {
+        LOG_ERROR("Failed to convert certificate serial ASN1_INTEGER to BIGNUM");
+        return Error::InternalError;
+    }
+    if (BN_is_negative(serial_bn.get())) {
+        LOG_ERROR("Certificate serial number is negative");
+        return Error::OcspInvalidRequest;
+    }
+    int serial_len = BN_num_bytes(serial_bn.get());
+    std::vector<uint8_t> serial_vec(serial_len > 0 ? static_cast<size_t>(serial_len) : 1u, 0u);
+    if (serial_len > 0) {
+        BN_bn2bin(serial_bn.get(), serial_vec.data());
+    }
+
+    out_lookup_key = to_hex_string(key_hash_vec, /*uppercase=*/false) + "_" +
+                     to_hex_string(serial_vec, /*uppercase=*/false);
+    out_cert_id = std::move(id);
+    return Error::Ok;
+}
+
+Error CallbackOcspClient::get_ocsp_response(
+    const nv_unique_ptr<X509>& subject_cert,
+    const nv_unique_ptr<X509>& issuer_cert,
+    const nv_unique_ptr<stack_st_X509>& intermediates,
+    const nv_unique_ptr<X509_STORE>& trust_store,
+    NvOcspResponse& out_ocsp_response
+) {
+    if (m_callback == nullptr) {
+        return Error::BadArgument;
+    }
+
+    const std::string aia_url = NvHttpOcspClient::first_ocsp_responder_url(subject_cert.get());
+    if (aia_url.empty()) {
+        out_ocsp_response = NvOcspResponse{};
+        out_ocsp_response.skipped = true;
+        return Error::Ok;
+    }
+
+    std::string lookup_key;
+    nv_unique_ptr<OCSP_CERTID> cert_id;
+    Error error = compute_cert_lookup_key(subject_cert.get(), issuer_cert.get(), lookup_key, cert_id);
+    if (error != Error::Ok) {
+        return error;
+    }
+
+    nvat_byte_buf_t collateral_buf = nullptr;
+    nvat_rc_t cb_rc = m_callback(
+        m_user_data,
+        NVAT_COLLATERAL_KIND_OCSP_RESPONSE,
+        lookup_key.c_str(),
+        &collateral_buf);
+
+    struct ByteBufGuard {
+        nvat_byte_buf_t* ptr;
+        ~ByteBufGuard() {
+            if (ptr != nullptr && *ptr != nullptr) {
+                nvat_byte_buf_free(ptr);
+            }
+        }
+    } guard{&collateral_buf};
+
+    if (cb_rc == NVAT_RC_COLLATERAL_NOT_FOUND || cb_rc == NVAT_RC_CACHE_OBJECT_NOT_FOUND) {
+        LOG_WARN("OCSP collateral callback reported not found for key: " << lookup_key);
+        return Error::OcspServerError;
+    }
+    if (cb_rc != NVAT_RC_OK || collateral_buf == nullptr) {
+        LOG_ERROR("OCSP collateral callback failed (rc=" << cb_rc << ") for key: " << lookup_key);
+        return Error::OcspServerError;
+    }
+
+    const auto* raw_vec = reinterpret_cast<const std::vector<uint8_t>*>(collateral_buf);
+    if (raw_vec->empty()) {
+        LOG_ERROR("OCSP collateral callback returned empty buffer for key: " << lookup_key);
+        return Error::OcspInvalidResponse;
+    }
+
+    std::string response_body(reinterpret_cast<const char*>(raw_vec->data()), raw_vec->size());
+    nv_unique_ptr<OCSP_BASICRESP> basic_resp;
+    error = NvHttpOcspClient::get_ocsp_response_from_raw(response_body, basic_resp);
+    if (error != Error::Ok) {
+        return error;
+    }
+
+    nv_unique_ptr<OCSP_REQUEST> unused_req;
+    error = NvHttpOcspClient::validate_ocsp_response(
+        unused_req,
+        basic_resp,
+        intermediates,
+        trust_store);
+    if (error == Error::Ok) {
+        out_ocsp_response.response_valid = true;
+    } else if (error == Error::OcspInvalidResponse) {
+        out_ocsp_response.response_valid = false;
+    } else {
+        return error;
+    }
+
+    out_ocsp_response.nonce_matches = false;
+    return NvHttpOcspClient::get_ocsp_status(basic_resp, cert_id, out_ocsp_response);
+}
+
 }

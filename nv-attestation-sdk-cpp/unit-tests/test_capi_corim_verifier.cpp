@@ -23,8 +23,15 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <string>
 #include <vector>
+
+#include <openssl/evp.h>
+#include <openssl/ocsp.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
 
 #include <jwt-cpp/jwt.h>
 #include <nlohmann/json.hpp>
@@ -638,6 +645,328 @@ TEST(CApiCorimVerifierTest, SetDefaultHashAlgorithmsRejectsBadArgs) {
 
     nvat_local_corim_verifier_free(&verifier);
     nvat_corim_store_free(&store);
+}
+
+namespace {
+
+struct OfflineCollateralStore {
+    std::map<std::string, std::vector<uint8_t>> corims;
+    std::map<std::string, std::vector<uint8_t>> ocsp_responses;
+};
+
+nvat_rc_t test_collateral_callback(void *user_data,
+                                   nvat_collateral_kind_t kind,
+                                   const char *lookup_key,
+                                   nvat_byte_buf_t *out_collateral) {
+    if (user_data == nullptr || lookup_key == nullptr || out_collateral == nullptr) {
+        return NVAT_RC_BAD_ARGUMENT;
+    }
+    *out_collateral = nullptr;
+    const auto *store = static_cast<const OfflineCollateralStore *>(user_data);
+    const std::map<std::string, std::vector<uint8_t>> *map_ptr = nullptr;
+    if (kind == NVAT_COLLATERAL_KIND_CORIM) {
+        map_ptr = &store->corims;
+    } else if (kind == NVAT_COLLATERAL_KIND_OCSP_RESPONSE) {
+        map_ptr = &store->ocsp_responses;
+    } else {
+        return NVAT_RC_BAD_ARGUMENT;
+    }
+    auto it = map_ptr->find(lookup_key);
+    if (it == map_ptr->end()) {
+        return NVAT_RC_COLLATERAL_NOT_FOUND;
+    }
+    return nvat_byte_buf_create(out_collateral, it->second.data(), it->second.size());
+}
+
+OfflineCollateralStore load_rubin_offline_store() {
+    OfflineCollateralStore store;
+    store.corims["GR100_081D_9900230000"] = read_binary_fixture(kRubinVbiosCorimPath);
+    store.corims["NV_GPU_DRIVER_GR100_620.54"] = read_binary_fixture(kRubinDriverCorimPath);
+
+    const char *ocsp_keys[] = {
+        "65129acf8647f4285e8d07c09c5320949aacff2b8dd3917540b15d8833813f52_410a3021db2466fe7c",
+        "115a377933f4e800ffcb8543a33536375173f75c66e1dd02db5f849fff113f27_44d719c02afb194c5c0bc7497c2e81bf",
+        "6f0264e4bce92d49cd76d17f79e2719ea1972af859fbae04eb2516b8317a8e9e_02c2f9f328f20749cda9060e7d165256",
+    };
+    for (const char *key : ocsp_keys) {
+        std::string path = std::string("testdata/sample_attestation_data/ocsp/") + key + ".der";
+        store.ocsp_responses[key] = read_binary_fixture(path.c_str());
+    }
+    return store;
+}
+
+} // namespace
+
+TEST(CApiCorimVerifierTest, VerifyCmwExOfflineCallbackCachedOcspAndVendorJsonHintsAffirming) {
+    std::string cmw_str;
+    ASSERT_EQ(readFileIntoString(kRubinCmwPath, cmw_str), nvattestation::Error::Ok);
+
+    // Inject MAA vendor +json hints to confirm cmw.cpp accepts application/*+json.
+    nlohmann::json cmw_json = nlohmann::json::parse(cmw_str);
+    std::string runtime_payload = R"({"keys":[],"foo":"bar"})";
+    std::string runtime_b64url;
+    ASSERT_EQ(nvattestation::encode_base64url(
+                  std::vector<uint8_t>(runtime_payload.begin(), runtime_payload.end()),
+                  runtime_b64url),
+              nvattestation::Error::Ok);
+    cmw_json["gpu_0"]["hints"] = nlohmann::json::array({
+        "application/vnd.microsoft.maa.x-ms-runtime+json",
+        runtime_b64url
+    });
+    const std::string modified_cmw = cmw_json.dump();
+
+    OfflineCollateralStore collateral = load_rubin_offline_store();
+    ASSERT_FALSE(collateral.corims["GR100_081D_9900230000"].empty());
+    ASSERT_EQ(collateral.ocsp_responses.size(), 3u);
+    for (const auto &kv : collateral.ocsp_responses) {
+        ASSERT_FALSE(kv.second.empty()) << "Missing OCSP fixture: " << kv.first;
+    }
+
+    nvat_corim_store_t store = nullptr;
+    ASSERT_EQ(nvat_corim_store_create(&store, nullptr, nullptr), NVAT_RC_OK);
+    nvat_local_corim_verifier_t verifier = nullptr;
+    ASSERT_EQ(nvat_local_corim_verifier_create(&verifier, &store, nullptr), NVAT_RC_OK);
+    ASSERT_EQ(nvat_local_corim_verifier_set_verify_rim_signature(verifier, false), NVAT_RC_OK);
+    ASSERT_EQ(nvat_local_corim_verifier_set_verify_revocation(verifier, true), NVAT_RC_OK);
+
+    nvat_verify_call_options_t call_opts = nullptr;
+    ASSERT_EQ(nvat_verify_call_options_create(&call_opts), NVAT_RC_OK);
+    ASSERT_EQ(nvat_verify_call_options_set_collateral_callback(
+                  call_opts, test_collateral_callback, &collateral),
+              NVAT_RC_OK);
+    ASSERT_EQ(nvat_verify_call_options_set_require_ocsp_nonce(call_opts, false), NVAT_RC_OK);
+    ASSERT_EQ(nvat_verify_call_options_set_enforce_ocsp_next_update(call_opts, true), NVAT_RC_OK);
+    // Inside [Nov 12 20:04:22 2026 GMT .. Nov 13 20:04:21 2026 GMT].
+    ASSERT_EQ(nvat_verify_call_options_set_verification_time(call_opts, 1794516000), NVAT_RC_OK);
+
+    nvat_str_t ear_str = nullptr;
+    ASSERT_EQ(nvat_local_corim_verifier_verify_cmw_ex(
+                  verifier,
+                  reinterpret_cast<const uint8_t *>(modified_cmw.data()),
+                  modified_cmw.size(),
+                  NVAT_CMW_FORMAT_JSON,
+                  call_opts,
+                  nullptr,
+                  nullptr,
+                  &ear_str),
+              NVAT_RC_OK);
+
+    nlohmann::json ear = result_json(ear_str);
+    EXPECT_EQ(ear.value("ear_status", std::string{}), "affirming");
+    const auto &gpu0 = ear["submods"]["gpu_0"];
+    EXPECT_EQ(gpu0.value("ear_status", std::string{}), "affirming");
+    const auto &chain = gpu0["ear_verifier_claims"]["ear_nvidia_evidence"]["cert_chain"];
+    ASSERT_EQ(chain.size(), 5u);
+    for (size_t idx : {1u, 2u, 3u}) {
+        EXPECT_EQ(chain[idx]["ocsp_crl_status"], "good");
+        EXPECT_EQ(chain[idx]["ocsp_nonce_matches"], false);
+        EXPECT_EQ(chain[idx]["ocsp_crl_response_expired"], false);
+    }
+
+    // Past nextUpdate with enforce_ocsp_next_update = true -> contraindicated.
+    nvat_str_free(&ear_str);
+    ASSERT_EQ(nvat_verify_call_options_set_verification_time(call_opts, 1794603600), NVAT_RC_OK);
+    ASSERT_EQ(nvat_local_corim_verifier_verify_cmw_ex(
+                  verifier,
+                  reinterpret_cast<const uint8_t *>(modified_cmw.data()),
+                  modified_cmw.size(),
+                  NVAT_CMW_FORMAT_JSON,
+                  call_opts,
+                  nullptr,
+                  nullptr,
+                  &ear_str),
+              NVAT_RC_OK);
+    ear = result_json(ear_str);
+    EXPECT_EQ(ear.value("ear_status", std::string{}), "contraindicated");
+    EXPECT_EQ(ear["submods"]["gpu_0"]["ear_verifier_claims"]["ear_nvidia_evidence"]["cert_chain"][1]["ocsp_crl_response_expired"], true);
+
+    // Disabling enforce_ocsp_next_update allows static replay past nextUpdate.
+    nvat_str_free(&ear_str);
+    ASSERT_EQ(nvat_verify_call_options_set_enforce_ocsp_next_update(call_opts, false), NVAT_RC_OK);
+    ASSERT_EQ(nvat_local_corim_verifier_verify_cmw_ex(
+                  verifier,
+                  reinterpret_cast<const uint8_t *>(modified_cmw.data()),
+                  modified_cmw.size(),
+                  NVAT_CMW_FORMAT_JSON,
+                  call_opts,
+                  nullptr,
+                  nullptr,
+                  &ear_str),
+              NVAT_RC_OK);
+    ear = result_json(ear_str);
+    EXPECT_EQ(ear.value("ear_status", std::string{}), "affirming");
+
+    // Missing OCSP in callback -> contraindicated + ocsp_crl_status = "error".
+    nvat_str_free(&ear_str);
+    collateral.ocsp_responses.clear();
+    ASSERT_EQ(nvat_local_corim_verifier_verify_cmw_ex(
+                  verifier,
+                  reinterpret_cast<const uint8_t *>(modified_cmw.data()),
+                  modified_cmw.size(),
+                  NVAT_CMW_FORMAT_JSON,
+                  call_opts,
+                  nullptr,
+                  nullptr,
+                  &ear_str),
+              NVAT_RC_OK);
+    ear = result_json(ear_str);
+    EXPECT_EQ(ear.value("ear_status", std::string{}), "contraindicated");
+    EXPECT_EQ(ear["submods"]["gpu_0"]["ear_verifier_claims"]["ear_nvidia_evidence"]["cert_chain"][1]["ocsp_crl_status"], "error");
+
+    nvat_str_free(&ear_str);
+    nvat_verify_call_options_free(&call_opts);
+    nvat_local_corim_verifier_free(&verifier);
+}
+
+TEST(CApiCorimVerifierTest, VerifyCmwExCustomRootWithRevokedDerOcspContraindicated) {
+    // Generate an in-memory EC P-384 Root CA -> Leaf (with AIA OCSP URL),
+    // sign a minimal CWT EAT CMW item, and supply a real signed REVOKED DER OCSPResponse.
+    auto make_ec_key = []() {
+        nvattestation::nv_unique_ptr<EVP_PKEY_CTX> pctx(EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr));
+        EVP_PKEY *raw = nullptr;
+        if (pctx && EVP_PKEY_keygen_init(pctx.get()) == 1 &&
+            EVP_PKEY_CTX_set_ec_paramgen_curve_nid(pctx.get(), NID_secp384r1) == 1) {
+            EVP_PKEY_keygen(pctx.get(), &raw);
+        }
+        return nvattestation::nv_unique_ptr<EVP_PKEY>(raw);
+    };
+
+    auto add_ext = [](X509 *cert, X509 *issuer, int nid, const char *val) {
+        X509V3_CTX vctx;
+        X509V3_set_ctx_nodb(&vctx);
+        X509V3_set_ctx(&vctx, issuer, cert, nullptr, nullptr, 0);
+        X509_EXTENSION *ext = X509V3_EXT_conf_nid(nullptr, &vctx, nid, const_cast<char *>(val));
+        ASSERT_NE(ext, nullptr);
+        ASSERT_EQ(X509_add_ext(cert, ext, -1), 1);
+        X509_EXTENSION_free(ext);
+    };
+
+    auto to_pem = [](X509 *cert) {
+        nvattestation::nv_unique_ptr<BIO> bio(BIO_new(BIO_s_mem()));
+        PEM_write_bio_X509(bio.get(), cert);
+        const char *ptr = nullptr;
+        long len = BIO_get_mem_data(bio.get(), &ptr);
+        return std::string(ptr, static_cast<size_t>(len));
+    };
+
+    auto root_key = make_ec_key();
+    auto leaf_key = make_ec_key();
+    ASSERT_NE(root_key.get(), nullptr);
+    ASSERT_NE(leaf_key.get(), nullptr);
+
+    nvattestation::nv_unique_ptr<X509> root_cert(X509_new());
+    X509_set_version(root_cert.get(), 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(root_cert.get()), 1);
+    X509_gmtime_adj(X509_get_notBefore(root_cert.get()), -3600);
+    X509_gmtime_adj(X509_get_notAfter(root_cert.get()), 86400 * 365);
+    X509_NAME_add_entry_by_txt(X509_get_subject_name(root_cert.get()), "CN", MBSTRING_ASC,
+                               reinterpret_cast<const unsigned char *>("Test Device Root CA"), -1, -1, 0);
+    X509_set_issuer_name(root_cert.get(), X509_get_subject_name(root_cert.get()));
+    X509_set_pubkey(root_cert.get(), root_key.get());
+    add_ext(root_cert.get(), root_cert.get(), NID_basic_constraints, "critical,CA:TRUE");
+    add_ext(root_cert.get(), root_cert.get(), NID_key_usage, "critical,keyCertSign,cRLSign");
+    add_ext(root_cert.get(), root_cert.get(), NID_subject_key_identifier, "hash");
+    ASSERT_GT(X509_sign(root_cert.get(), root_key.get(), EVP_sha384()), 0);
+
+    nvattestation::nv_unique_ptr<X509> leaf_cert(X509_new());
+    X509_set_version(leaf_cert.get(), 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(leaf_cert.get()), 42);
+    X509_gmtime_adj(X509_get_notBefore(leaf_cert.get()), -3600);
+    X509_gmtime_adj(X509_get_notAfter(leaf_cert.get()), 86400 * 365);
+    X509_NAME_add_entry_by_txt(X509_get_subject_name(leaf_cert.get()), "CN", MBSTRING_ASC,
+                               reinterpret_cast<const unsigned char *>("Test Device Leaf"), -1, -1, 0);
+    X509_set_issuer_name(leaf_cert.get(), X509_get_subject_name(root_cert.get()));
+    X509_set_pubkey(leaf_cert.get(), leaf_key.get());
+    add_ext(leaf_cert.get(), root_cert.get(), NID_basic_constraints, "critical,CA:FALSE");
+    add_ext(leaf_cert.get(), root_cert.get(), NID_key_usage, "critical,digitalSignature");
+    add_ext(leaf_cert.get(), root_cert.get(), NID_authority_key_identifier, "keyid:always");
+    add_ext(leaf_cert.get(), root_cert.get(), NID_info_access, "OCSP;URI:http://ocsp.example.test");
+    ASSERT_GT(X509_sign(leaf_cert.get(), root_key.get(), EVP_sha384()), 0);
+
+    // Build a signed DER OCSPResponse marking leaf_cert REVOKED (keyCompromise).
+    std::string lookup_key;
+    nvattestation::nv_unique_ptr<OCSP_CERTID> cert_id;
+    ASSERT_EQ(nvattestation::CallbackOcspClient::compute_cert_lookup_key(
+                  leaf_cert.get(), root_cert.get(), lookup_key, cert_id),
+              nvattestation::Error::Ok);
+
+    nvattestation::nv_unique_ptr<OCSP_BASICRESP> bresp(OCSP_BASICRESP_new());
+    nvattestation::nv_unique_ptr<ASN1_TIME> thisupd(ASN1_TIME_adj(nullptr, time(nullptr), 0, -60));
+    nvattestation::nv_unique_ptr<ASN1_TIME> nextupd(ASN1_TIME_adj(nullptr, time(nullptr), 1, 0));
+    nvattestation::nv_unique_ptr<ASN1_TIME> revtime(ASN1_TIME_adj(nullptr, time(nullptr), 0, -120));
+    ASSERT_NE(OCSP_basic_add1_status(bresp.get(), cert_id.get(), V_OCSP_CERTSTATUS_REVOKED,
+                                     OCSP_REVOKED_STATUS_KEYCOMPROMISE,
+                                     revtime.get(), thisupd.get(), nextupd.get()),
+              nullptr);
+    ASSERT_EQ(OCSP_basic_sign(bresp.get(), root_cert.get(), root_key.get(), EVP_sha384(), nullptr, 0), 1);
+    nvattestation::nv_unique_ptr<OCSP_RESPONSE> oresp(
+        OCSP_response_create(OCSP_RESPONSE_STATUS_SUCCESSFUL, bresp.get()));
+    unsigned char *der_ptr = nullptr;
+    int der_len = i2d_OCSP_RESPONSE(oresp.get(), &der_ptr);
+    ASSERT_GT(der_len, 0);
+    std::vector<uint8_t> revoked_der(der_ptr, der_ptr + der_len);
+    OPENSSL_free(der_ptr);
+
+    // Use Rubin SPDM transcript bytes with our test chain (signature verification off
+    // so appraisal runs cert_chain + OCSP and reports the REVOKED cert status).
+    std::string rubin_cmw_str;
+    ASSERT_EQ(readFileIntoString(kRubinCmwPath, rubin_cmw_str), nvattestation::Error::Ok);
+    nlohmann::json cmw_json = nlohmann::json::parse(rubin_cmw_str);
+    const std::string root_pem = to_pem(root_cert.get());
+    const std::string chain_pem = to_pem(leaf_cert.get()) + root_pem;
+    std::string chain_b64url;
+    ASSERT_EQ(nvattestation::encode_base64url(
+                  std::vector<uint8_t>(chain_pem.begin(), chain_pem.end()), chain_b64url),
+              nvattestation::Error::Ok);
+    cmw_json["gpu_0"]["certificate"] = nlohmann::json::array({
+        "application/vnd.nvidia.pem-cert-chain", chain_b64url
+    });
+    const std::string test_cmw = cmw_json.dump();
+
+    OfflineCollateralStore collateral = load_rubin_offline_store();
+    collateral.ocsp_responses.clear();
+    collateral.ocsp_responses[lookup_key] = std::move(revoked_der);
+
+    nvat_corim_store_t store = nullptr;
+    ASSERT_EQ(nvat_corim_store_create(&store, nullptr, nullptr), NVAT_RC_OK);
+    nvat_local_corim_verifier_t verifier = nullptr;
+    ASSERT_EQ(nvat_local_corim_verifier_create(&verifier, &store, nullptr), NVAT_RC_OK);
+    const char *roots[] = {root_pem.c_str()};
+    ASSERT_EQ(nvat_local_corim_verifier_set_device_identity_roots(verifier, roots, 1), NVAT_RC_OK);
+    ASSERT_EQ(nvat_local_corim_verifier_set_verify_evidence_signature(verifier, false), NVAT_RC_OK);
+    ASSERT_EQ(nvat_local_corim_verifier_set_verify_rim_signature(verifier, false), NVAT_RC_OK);
+    ASSERT_EQ(nvat_local_corim_verifier_set_verify_revocation(verifier, true), NVAT_RC_OK);
+
+    nvat_verify_call_options_t call_opts = nullptr;
+    ASSERT_EQ(nvat_verify_call_options_create(&call_opts), NVAT_RC_OK);
+    ASSERT_EQ(nvat_verify_call_options_set_collateral_callback(
+                  call_opts, test_collateral_callback, &collateral),
+              NVAT_RC_OK);
+    ASSERT_EQ(nvat_verify_call_options_set_require_ocsp_nonce(call_opts, false), NVAT_RC_OK);
+
+    nvat_str_t ear_str = nullptr;
+    ASSERT_EQ(nvat_local_corim_verifier_verify_cmw_ex(
+                  verifier,
+                  reinterpret_cast<const uint8_t *>(test_cmw.data()),
+                  test_cmw.size(),
+                  NVAT_CMW_FORMAT_JSON,
+                  call_opts,
+                  nullptr,
+                  nullptr,
+                  &ear_str),
+              NVAT_RC_OK);
+
+    nlohmann::json ear = result_json(ear_str);
+    EXPECT_EQ(ear.value("ear_status", std::string{}), "contraindicated");
+    const auto &chain = ear["submods"]["gpu_0"]["ear_verifier_claims"]["ear_nvidia_evidence"]["cert_chain"];
+    ASSERT_EQ(chain.size(), 2u);
+    EXPECT_EQ(chain[1]["cert_check_status"], "revoked");
+    EXPECT_EQ(chain[1]["ocsp_crl_status"], "revoked");
+    EXPECT_EQ(chain[1]["revocation_reason"], "keyCompromise");
+
+    nvat_str_free(&ear_str);
+    nvat_verify_call_options_free(&call_opts);
+    nvat_local_corim_verifier_free(&verifier);
 }
 
 TEST(CApiCorimVerifierTest, VerifyCmwDiscardsResultAndRejectsEmptyInput) {

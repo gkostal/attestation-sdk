@@ -391,6 +391,12 @@ void to_json(nlohmann::json &json_out, const EvidenceItemAppraisal &item);
 void to_json(nlohmann::json &json_out, const InputDigest &digest);
 void to_json(nlohmann::json &json_out, const CorimAttestationResult &result);
 
+struct CorimVerifyCallOptions {
+    nvat_collateral_cb_t collateral_callback = nullptr;
+    void *collateral_user_data = nullptr;
+    OcspVerifyOptions ocsp_options{};
+};
+
 // V2 local verifier entry point. Parses a CMW input collection and, per
 // evidence item, anchors its cert chain to the trust store, verifies the
 // evidence signature, fetches and parses the referenced CoRIMs, then runs
@@ -411,6 +417,9 @@ class LocalCorimVerifier {
     // Append a root CA PEM to the device-identity trust store. The chain
     // on each CMW evidence item must anchor to one of these roots.
     Error add_device_identity_trust_root_pem(std::string pem);
+
+    // Replace the device-identity trust store roots with the supplied PEMs.
+    Error set_device_identity_trust_roots_pem(const std::vector<std::string> &pems);
 
     // When disabled, the injected OCSP client is not consulted and chains are
     // treated as not revoked.
@@ -461,17 +470,28 @@ class LocalCorimVerifier {
                      std::string *out_ear_jwt = nullptr,
                      std::string *out_ear_json = nullptr) const;
 
+    Error verify_cmw_ex(const uint8_t *cmw_data, std::size_t cmw_len,
+                        CmwFormat format,
+                        const CorimVerifyCallOptions *call_options,
+                        CorimAttestationResult &out_result,
+                        const DetachedEATOptions *ear_signing_options = nullptr,
+                        std::string *out_ear_jwt = nullptr,
+                        std::string *out_ear_json = nullptr) const;
+
   private:
     EvidenceItemAppraisal
-    appraise_item(const std::string &label, const CmwEvidenceItem &item) const;
+    appraise_item(const std::string &label, const CmwEvidenceItem &item,
+                  const CorimVerifyCallOptions *call_options = nullptr) const;
 
     // Validate a device-identity cert chain against the configured roots.
     Error anchor_device_chain(const std::string &chain_pem,
-                              X509CertChain &out_chain) const;
+                              X509CertChain &out_chain,
+                              time_t verification_time = 0) const;
 
     // Verify a fetched CoEV's COSE_Sign1 signature and return its payload.
     Error verify_coev_signature(const std::vector<uint8_t> &coev_bytes,
                                 const std::shared_ptr<IOcspHttpClient> &ocsp_client,
+                                const OcspVerifyOptions &ocsp_options,
                                 std::vector<uint8_t> &out_payload,
                                 std::vector<PerCertStatus> &out_cert_claims) const;
 

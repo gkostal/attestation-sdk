@@ -95,7 +95,8 @@ namespace nvattestation {
     MACRO(CacheObjectNotFound, NVAT_RC_CACHE_OBJECT_NOT_FOUND) \
     MACRO(CoseParseError, NVAT_RC_COSE_PARSE_ERROR) \
     MACRO(CoseInvalidSignature, NVAT_RC_COSE_INVALID_SIGNATURE) \
-    MACRO(CoseThumbprintMismatch, NVAT_RC_COSE_THUMBPRINT_MISMATCH)
+    MACRO(CoseThumbprintMismatch, NVAT_RC_COSE_THUMBPRINT_MISMATCH) \
+    MACRO(CollateralNotFound, NVAT_RC_COLLATERAL_NOT_FOUND)
 // Define both the Enum and an array of enum values
 enum class Error {
     #define ERROR_ENUM_TO_ENUM(name, val) name = (val),
@@ -209,6 +210,7 @@ inline const char* to_string(Error error) {
         case Error::CoseParseError: return "COSE Parse Error";
         case Error::CoseInvalidSignature: return "COSE Invalid Signature";
         case Error::CoseThumbprintMismatch: return "COSE Certificate Thumbprint Mismatch";
+        case Error::CollateralNotFound: return "Collateral Not Found";
     }
     return "Undefined";
 }

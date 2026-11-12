@@ -1263,7 +1263,8 @@ void to_json(nlohmann::json &json_out, const VerificationResult &result) {
 }
 
 Error LocalCorimVerifier::anchor_device_chain(const std::string &chain_pem,
-                                              X509CertChain &out_chain) const {
+                                              X509CertChain &out_chain,
+                                              time_t verification_time) const {
     std::vector<nv_unique_ptr<X509>> anchors;
     std::vector<X509 *> anchor_ptrs;
     for (const auto &root : m_device_identity_roots) {
@@ -1281,6 +1282,12 @@ Error LocalCorimVerifier::anchor_device_chain(const std::string &chain_pem,
     if (!store) {
         return Error::CertChainVerificationFailure;
     }
+    if (verification_time > 0) {
+        X509_VERIFY_PARAM *param = X509_STORE_get0_param(store.get());
+        if (param != nullptr) {
+            X509_VERIFY_PARAM_set_time(param, verification_time);
+        }
+    }
     Error build = X509CertChain::create_from_cert_chain_str(
         CertificateChainType::GENERIC, std::move(store), chain_pem, out_chain);
     if (build != Error::Ok) {
@@ -1292,11 +1299,13 @@ Error LocalCorimVerifier::anchor_device_chain(const std::string &chain_pem,
 Error LocalCorimVerifier::verify_coev_signature(
     const std::vector<uint8_t> &coev_bytes,
     const std::shared_ptr<IOcspHttpClient> &ocsp_client,
+    const OcspVerifyOptions &ocsp_options,
     std::vector<uint8_t> &out_payload,
     std::vector<PerCertStatus> &out_cert_claims) const {
     CoseSign1VerifyOptions cose_opts;
     cose_opts.root_cert_pem = m_rim_signing_root;
     cose_opts.verify_ocsp = (ocsp_client != nullptr);
+    cose_opts.ocsp_options = ocsp_options;
     NvHttpOcspClient ocsp_placeholder;
     IOcspHttpClient &ocsp_ref =
         ocsp_client ? *ocsp_client
@@ -1329,6 +1338,22 @@ Error LocalCorimVerifier::add_device_identity_trust_root_pem(std::string pem) {
         return Error::BadArgument;
     }
     m_device_identity_roots.push_back(std::move(pem));
+    return Error::Ok;
+}
+
+Error LocalCorimVerifier::set_device_identity_trust_roots_pem(
+    const std::vector<std::string> &pems) {
+    if (pems.empty()) {
+        LOG_ERROR("device-identity trust roots list is empty");
+        return Error::BadArgument;
+    }
+    for (const auto &pem : pems) {
+        if (pem.empty() || !x509_from_cert_string(pem)) {
+            LOG_ERROR("invalid device-identity trust root PEM");
+            return Error::BadArgument;
+        }
+    }
+    m_device_identity_roots = pems;
     return Error::Ok;
 }
 
@@ -1495,9 +1520,10 @@ void to_json(nlohmann::json &json_out, const CorimAttestationResult &result) {
 namespace {
 std::vector<PerCertStatus>
 collect_per_cert_status(const X509CertChain &chain,
-                        const std::shared_ptr<IOcspHttpClient> &ocsp_client) {
+                        const std::shared_ptr<IOcspHttpClient> &ocsp_client,
+                        const OcspVerifyOptions &ocsp_options) {
     std::vector<PerCertStatus> statuses;
-    if (chain.generate_per_cert_status(OcspVerifyOptions(), ocsp_client.get(), statuses) != Error::Ok) {
+    if (chain.generate_per_cert_status(ocsp_options, ocsp_client.get(), statuses) != Error::Ok) {
         LOG_WARN("OCSP collection failed; per-cert OCSP data will be absent");
     }
     return statuses;
@@ -1508,7 +1534,7 @@ collect_per_cert_status(const X509CertChain &chain,
 Error extract_firmware_version_hint(const CmwEvidenceItem &item,
                                     std::string &out_fw_version) {
     out_fw_version.clear();
-    if (!item.hints) {
+    if (!item.hints || item.hints->media_type != kCmwMediaJson) {
         return Error::Ok;
     }
     nlohmann::json hints_json;
@@ -1608,13 +1634,27 @@ Error fetched_coev_error(Error err) {
 } // namespace
 
 EvidenceItemAppraisal LocalCorimVerifier::appraise_item(
-    const std::string &label, const CmwEvidenceItem &item) const {
+    const std::string &label, const CmwEvidenceItem &item,
+    const CorimVerifyCallOptions *call_options) const {
     EvidenceItemAppraisal appraisal;
     appraisal.label = label;
 
-    // Revocation gates the injected client; disabled => not consulted.
-    const std::shared_ptr<IOcspHttpClient> ocsp_client =
-        m_verify_revocation ? m_ocsp_client : nullptr;
+    const bool use_collateral_cb =
+        (call_options != nullptr && call_options->collateral_callback != nullptr);
+    const OcspVerifyOptions ocsp_options =
+        (call_options != nullptr) ? call_options->ocsp_options : OcspVerifyOptions();
+
+    // Revocation gates the injected or per-call callback client; disabled => not consulted.
+    std::shared_ptr<IOcspHttpClient> ocsp_client;
+    if (m_verify_revocation) {
+        if (use_collateral_cb) {
+            ocsp_client = std::make_shared<CallbackOcspClient>(
+                call_options->collateral_callback,
+                call_options->collateral_user_data);
+        } else {
+            ocsp_client = m_ocsp_client;
+        }
+    }
 
     const IEvidenceHandler *handler =
         find_evidence_handler(item.evidence.media_type);
@@ -1643,7 +1683,8 @@ EvidenceItemAppraisal LocalCorimVerifier::appraise_item(
                      "(unsigned evidence)");
     } else {
         std::string chain_str(chain_pem.begin(), chain_pem.end());
-        Error anchor = anchor_device_chain(chain_str, device_chain);
+        Error anchor = anchor_device_chain(
+            chain_str, device_chain, ocsp_options.verification_time);
         chain_available = device_chain.size() != 0;
         if (anchor != Error::Ok) {
             if (m_evidence_handler_settings.m_verify_evidence_signature) {
@@ -1674,7 +1715,7 @@ EvidenceItemAppraisal LocalCorimVerifier::appraise_item(
 
             appraisal.evidence.cert_chain =
                 std::make_unique<std::vector<PerCertStatus>>(
-                    collect_per_cert_status(device_chain, ocsp_client));
+                    collect_per_cert_status(device_chain, ocsp_client, ocsp_options));
             LOG_INFO("[" << label << "] device cert chain: "
                          << appraisal.evidence.cert_chain->size() << " certs");
         }
@@ -1684,7 +1725,7 @@ EvidenceItemAppraisal LocalCorimVerifier::appraise_item(
     Error extract_err = handler->verify_and_extract_ects(
         item, device_chain, m_evidence_handler_settings, verification);
     bool cert_chain_trusted = !appraisal.evidence.cert_chain ||
-        all_certs_trusted(*appraisal.evidence.cert_chain);
+        all_certs_trusted(*appraisal.evidence.cert_chain, ocsp_options);
     appraisal.evidence.signature_verified =
         chain_anchored && verification.signature_valid && cert_chain_trusted;
     appraisal.evidence.parsed = verification.parsed;
@@ -1831,9 +1872,14 @@ EvidenceItemAppraisal LocalCorimVerifier::appraise_item(
         bool coev_present = false;
         std::string coev_sha256;
         std::string effective_url;
-        Error fetch_err = m_corim_store.fetch_with_coev(
-            url, rim_bytes, coev_bytes, coev_present, coev_sha256,
-            &effective_url);
+        Error fetch_err = use_collateral_cb
+            ? m_corim_store.fetch_via_callback(
+                  url, call_options->collateral_callback,
+                  call_options->collateral_user_data, rim_bytes, coev_bytes,
+                  coev_present, coev_sha256, &effective_url)
+            : m_corim_store.fetch_with_coev(
+                  url, rim_bytes, coev_bytes, coev_present, coev_sha256,
+                  &effective_url);
         if (fetch_err != Error::Ok) {
             LOG_ERROR("[" << label << "] RIM fetch failed: raw URL=" << url
                           << " effective URL=" << effective_url);
@@ -1879,6 +1925,7 @@ EvidenceItemAppraisal LocalCorimVerifier::appraise_item(
             CoseSign1VerifyOptions cose_opts;
             cose_opts.root_cert_pem = m_rim_signing_root;
             cose_opts.verify_ocsp = (ocsp_client != nullptr);
+            cose_opts.ocsp_options = ocsp_options;
             // parse_signed_corim takes the client by reference; when OCSP is
             // off, verify_ocsp is false and this stand-in is never consulted.
             NvHttpOcspClient ocsp_placeholder;
@@ -1928,8 +1975,9 @@ EvidenceItemAppraisal LocalCorimVerifier::appraise_item(
             std::vector<uint8_t> coev_payload = coev_bytes;
             if (m_verify_coev_signature) {
                 std::vector<PerCertStatus> coev_cert_claims;
-                coev_err = verify_coev_signature(coev_bytes, ocsp_client,
-                                                 coev_payload, coev_cert_claims);
+                coev_err = verify_coev_signature(
+                    coev_bytes, ocsp_client, ocsp_options,
+                    coev_payload, coev_cert_claims);
                 // Retain cert-chain claims even on failure (e.g. a revoked
                 // signer), so the EAR still shows which cert was at fault.
                 if (!coev_cert_claims.empty()) {
@@ -2121,6 +2169,19 @@ Error LocalCorimVerifier::verify_cmw(const uint8_t *cmw_data,
                                      const DetachedEATOptions *ear_signing_options,
                                      std::string *out_ear_jwt,
                                      std::string *out_ear_json) const {
+    return verify_cmw_ex(cmw_data, cmw_len, format, nullptr, out_result,
+                         ear_signing_options, out_ear_jwt, out_ear_json);
+}
+
+Error LocalCorimVerifier::verify_cmw_ex(
+    const uint8_t *cmw_data,
+    std::size_t cmw_len,
+    CmwFormat format,
+    const CorimVerifyCallOptions *call_options,
+    CorimAttestationResult &out_result,
+    const DetachedEATOptions *ear_signing_options,
+    std::string *out_ear_jwt,
+    std::string *out_ear_json) const {
     out_result = CorimAttestationResult();
     if (cmw_data == nullptr) {
         LOG_ERROR("verify_cmw called with null cmw_data");
@@ -2165,7 +2226,7 @@ Error LocalCorimVerifier::verify_cmw(const uint8_t *cmw_data,
 
     for (const auto &labelled : cmw.evidence_items()) {
         out_result.items.push_back(
-            appraise_item(labelled.first, labelled.second));
+            appraise_item(labelled.first, labelled.second, call_options));
     }
 
     if (out_ear_jwt != nullptr || out_ear_json != nullptr) {

@@ -213,6 +213,8 @@ const char* nvat_rc_to_string(nvat_rc_t rc);
 #define NVAT_RC_COSE_INVALID_SIGNATURE          (902)
 /// @brief Indicates a COSE x5t certificate thumbprint mismatch.
 #define NVAT_RC_COSE_THUMBPRINT_MISMATCH        (903)
+/// @brief Indicates requested collateral was not found in the caller-supplied store/cache.
+#define NVAT_RC_COLLATERAL_NOT_FOUND            (904)
 
 /** @} return_codes */
 
@@ -2047,6 +2049,84 @@ nvat_rc_t nvat_local_corim_verifier_set_default_hash_algorithms(
 );
 
 void nvat_local_corim_verifier_free(nvat_local_corim_verifier_t* verifier);
+
+/**
+ * @brief Heap-allocated byte buffer owned by libnvat, used to return binary
+ *        collateral safely across the C ABI without cross-module free issues.
+ */
+typedef struct nvat_byte_buf_st* nvat_byte_buf_t;
+
+nvat_rc_t nvat_byte_buf_create(
+    nvat_byte_buf_t* out_buf,
+    const uint8_t* data,
+    size_t len
+);
+
+void nvat_byte_buf_free(nvat_byte_buf_t* buf);
+
+/**
+ * @brief Kind of verification collateral requested via @ref nvat_collateral_cb_t.
+ */
+typedef enum {
+    NVAT_COLLATERAL_KIND_CORIM = 1,
+    NVAT_COLLATERAL_KIND_OCSP_RESPONSE = 2,
+} nvat_collateral_kind_t;
+
+/**
+ * @brief Per-call synchronous callback invoked by libnvat to fetch collateral.
+ */
+typedef nvat_rc_t (*nvat_collateral_cb_t)(
+    void* user_data,
+    nvat_collateral_kind_t kind,
+    const char* lookup_key,
+    nvat_byte_buf_t* out_collateral
+);
+
+/**
+ * @brief Per-call verification options for @ref nvat_local_corim_verifier_verify_cmw_ex.
+ */
+typedef struct nvat_verify_call_options_st* nvat_verify_call_options_t;
+
+nvat_rc_t nvat_verify_call_options_create(nvat_verify_call_options_t* out_options);
+void nvat_verify_call_options_free(nvat_verify_call_options_t* options);
+
+nvat_rc_t nvat_verify_call_options_set_collateral_callback(
+    nvat_verify_call_options_t options,
+    nvat_collateral_cb_t callback,
+    void* user_data
+);
+
+nvat_rc_t nvat_verify_call_options_set_require_ocsp_nonce(
+    nvat_verify_call_options_t options,
+    bool require_nonce
+);
+
+nvat_rc_t nvat_verify_call_options_set_enforce_ocsp_next_update(
+    nvat_verify_call_options_t options,
+    bool enforce_next_update
+);
+
+nvat_rc_t nvat_verify_call_options_set_verification_time(
+    nvat_verify_call_options_t options,
+    int64_t epoch_seconds
+);
+
+nvat_rc_t nvat_local_corim_verifier_set_device_identity_roots(
+    nvat_local_corim_verifier_t verifier,
+    const char* const* root_cert_pems,
+    size_t num_roots
+);
+
+nvat_rc_t nvat_local_corim_verifier_verify_cmw_ex(
+    const nvat_local_corim_verifier_t verifier,
+    const uint8_t* cmw_data,
+    size_t cmw_len,
+    nvat_cmw_format_t format,
+    const nvat_verify_call_options_t call_options,
+    nvat_ear_signing_options_t ear_signing_options,
+    nvat_str_t* out_ear_jwt,
+    nvat_str_t* out_ear_json
+);
 
 /** @} local_corim_verifier */
 

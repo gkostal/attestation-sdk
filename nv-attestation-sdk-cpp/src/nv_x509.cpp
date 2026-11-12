@@ -511,6 +511,13 @@ Error X509CertChain::collect_ocsp_responses(const OcspVerifyOptions& options, IO
         return Error::InternalError;
     }
 
+    if (options.verification_time > 0) {
+        X509_VERIFY_PARAM* param = X509_STORE_get0_param(m_trust_store.get());
+        if (param != nullptr) {
+            X509_VERIFY_PARAM_set_time(param, options.verification_time);
+        }
+    }
+
     int start_indx = 0;
     if (m_type == CertificateChainType::GPU_DEVICE_IDENTITY || m_type == CertificateChainType::NVSWITCH_DEVICE_IDENTITY) {
         start_indx = 1;
@@ -632,7 +639,8 @@ Error X509CertChain::generate_ocsp_claims(const OcspVerifyOptions& ocsp_verify_o
     return Error::Ok;
 }
 
-bool all_certs_trusted(const std::vector<PerCertStatus>& chain) {
+bool all_certs_trusted(const std::vector<PerCertStatus>& chain,
+                       const OcspVerifyOptions& ocsp_options) {
     // No ocsp data or NOT_CHECKED means not applicable. A genuinely failed
     // query must be marked ERROR by the caller, not left null.
     for (size_t i = 0; i < chain.size(); ++i) {
@@ -643,8 +651,13 @@ bool all_certs_trusted(const std::vector<PerCertStatus>& chain) {
         if (!cert.ocsp || cert.ocsp->crl_status == OCSPStatus::NOT_CHECKED) {
             continue;
         }
-        if (cert.ocsp->crl_status != OCSPStatus::GOOD ||
-            !cert.ocsp->nonce_matches || !cert.ocsp->response_valid) {
+        if (cert.ocsp->crl_status != OCSPStatus::GOOD || !cert.ocsp->response_valid) {
+            return false;
+        }
+        if (ocsp_options.require_nonce && !cert.ocsp->nonce_matches) {
+            return false;
+        }
+        if (ocsp_options.enforce_next_update && cert.ocsp->response_expired) {
             return false;
         }
     }
@@ -697,7 +710,9 @@ Error X509CertChain::generate_per_cert_status(const OcspVerifyOptions& ocsp_opti
         return Error::InternalError;
     }
 
-    time_t now = time(nullptr);
+    time_t now = (ocsp_options.verification_time > 0)
+        ? ocsp_options.verification_time
+        : time(nullptr);
     out_statuses.resize(m_certs.size());
 
     for (size_t i = 0; i < m_certs.size(); ++i) {

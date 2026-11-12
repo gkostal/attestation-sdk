@@ -162,5 +162,7 @@ NVAT_PTR_CONVERSION_FUNCTIONS(switch_nras_verifier,  NvRemoteSwitchVerifier);
 NVAT_PTR_CONVERSION_FUNCTIONS(cmw_collection, CmwCollection);
 NVAT_PTR_CONVERSION_FUNCTIONS(corim_store, CorimStore);
 NVAT_PTR_CONVERSION_FUNCTIONS(local_corim_verifier, LocalCorimVerifier);
+NVAT_PTR_CONVERSION_FUNCTIONS(byte_buf, std::vector<uint8_t>);
+NVAT_PTR_CONVERSION_FUNCTIONS(verify_call_options, CorimVerifyCallOptions);
 
 } // extern "C"

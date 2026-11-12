@@ -26,6 +26,7 @@
 #include "nv_attestation/error.h"
 #include "nv_attestation/nv_cache.h"
 #include "nv_attestation/nv_http.h"
+#include "nvat.h"
 
 namespace nvattestation {
 
@@ -67,6 +68,17 @@ class CorimStore {
                            bool &out_coev_present,
                            std::string &out_coev_sha256,
                            std::string *out_effective_url = nullptr) const;
+
+    // Fetches CoRIM (and optional CoEV) via a caller-supplied per-call
+    // collateral callback with zero network or filesystem I/O.
+    Error fetch_via_callback(const std::string &url,
+                             nvat_collateral_cb_t callback,
+                             void *user_data,
+                             std::vector<uint8_t> &out_corim_bytes,
+                             std::vector<uint8_t> &out_coev_bytes,
+                             bool &out_coev_present,
+                             std::string &out_coev_sha256,
+                             std::string *out_effective_url = nullptr) const;
 
   private:
     friend class LocalCorimVerifier;

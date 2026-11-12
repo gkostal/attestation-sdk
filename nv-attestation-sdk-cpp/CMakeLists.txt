@@ -638,6 +638,21 @@ target_link_libraries(nvat
 # Ensure dependencies are built before nvat
 add_dependencies(nvat regorus_ffi spdlog fmt curl_external xmlsec_external openssl_external zcbor_lib)
 
+if(BUILD_TESTING)
+  set(_NVAT_HIDE_SYMBOLS_DEFAULT OFF)
+else()
+  set(_NVAT_HIDE_SYMBOLS_DEFAULT ON)
+endif()
+option(NVAT_HIDE_INTERNAL_SYMBOLS "Hide all non-nvat_* symbols in libnvat shared library" ${_NVAT_HIDE_SYMBOLS_DEFAULT})
+
+if(UNIX AND NOT APPLE AND BUILD_SHARED_LIBS)
+  target_link_options(nvat PRIVATE "-Wl,--exclude-libs,ALL")
+  if(NVAT_HIDE_INTERNAL_SYMBOLS)
+    target_link_options(nvat PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/nvat.lds")
+    set_target_properties(nvat PROPERTIES LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/nvat.lds")
+  endif()
+endif()
+
 # todo (p0): remove cmake configuration helpers
 install(TARGETS nvat
   EXPORT nvatTargets

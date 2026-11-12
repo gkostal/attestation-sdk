@@ -49,6 +49,19 @@ bool is_supported_certificate_media_type(const std::string &media_type) {
                        [&](const char *known) { return media_type == known; });
 }
 
+bool is_supported_hints_media_type(const std::string &media_type) {
+    if (media_type == kCmwMediaJson) {
+        return true;
+    }
+    constexpr const char *kAppPrefix = "application/";
+    constexpr const char *kJsonSuffix = "+json";
+    const std::size_t prefix_len = std::string(kAppPrefix).size();
+    const std::size_t suffix_len = std::string(kJsonSuffix).size();
+    return media_type.size() > (prefix_len + suffix_len) &&
+           starts_with(media_type, kAppPrefix) &&
+           media_type.compare(media_type.size() - suffix_len, suffix_len, kJsonSuffix) == 0;
+}
+
 // [media-type, base64url-data]. The 3-element form (with an ind bitmap) is
 // rejected; this profile doesn't use it.
 Error read_record(const nlohmann::json &node, const std::string &field_name,
@@ -165,7 +178,7 @@ Error parse_evidence_item(const nlohmann::json &node,
         if (err != Error::Ok) {
             return err;
         }
-        if (record->media_type != kCmwMediaJson) {
+        if (!is_supported_hints_media_type(record->media_type)) {
             LOG_ERROR("CMW evidence item '"
                       << label << "' has unsupported hints media type: "
                       << record->media_type);

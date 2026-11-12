@@ -41,10 +41,11 @@ namespace nvattestation
 
    class OcspVerifyOptions
    {
-   private:
-
    public:
-      OcspVerifyOptions() {}
+      OcspVerifyOptions() = default;
+      bool require_nonce = true;
+      bool enforce_next_update = false;
+      time_t verification_time = 0;
    };
 
    class EvidencePolicy {

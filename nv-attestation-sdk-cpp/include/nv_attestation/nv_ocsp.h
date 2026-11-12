@@ -232,6 +232,7 @@ private:
     friend class NvHttpOcspClientStatusTest_MissingNextUpdateUsesDefaultTtl_Test;
     friend class NvHttpOcspClientHashTest_ConfiguredAlgorithmsBuildExpectedCertIds_Test;
     friend class NvHttpOcspCacheClient;
+    friend class CallbackOcspClient;
 
 };
 
@@ -272,5 +273,30 @@ public:
         std::string& out_cache_key
     );
 
+};
+
+class CallbackOcspClient : public IOcspHttpClient {
+public:
+    CallbackOcspClient(nvat_collateral_cb_t callback, void* user_data)
+        : m_callback(callback), m_user_data(user_data) {}
+
+    Error get_ocsp_response(
+        const nv_unique_ptr<X509>& subject_cert,
+        const nv_unique_ptr<X509>& issuer_cert,
+        const nv_unique_ptr<stack_st_X509>& intermediates,
+        const nv_unique_ptr<X509_STORE>& trust_store,
+        NvOcspResponse& out_ocsp_response
+    ) override;
+
+    static Error compute_cert_lookup_key(
+        X509* subject_cert,
+        X509* issuer_cert,
+        std::string& out_lookup_key,
+        nv_unique_ptr<OCSP_CERTID>& out_cert_id
+    );
+
+private:
+    nvat_collateral_cb_t m_callback = nullptr;
+    void* m_user_data = nullptr;
 };
 }

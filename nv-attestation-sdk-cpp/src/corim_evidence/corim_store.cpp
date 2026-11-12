@@ -280,9 +280,100 @@ Error CorimStore::fetch_impl(const std::string &url,
         entry->coev_present = out_coev_present;
         entry->coev_sha256 = out_coev_sha256;
         m_cache->put(effective, entry,
-                     entry->corim_bytes.size() + entry->coev_bytes.size());
+                     entry->corim_bytes.size() + entry->corim_bytes.size());
     }
     return err;
+}
+
+Error CorimStore::fetch_via_callback(
+    const std::string &url,
+    nvat_collateral_cb_t callback,
+    void *user_data,
+    std::vector<uint8_t> &out_corim_bytes,
+    std::vector<uint8_t> &out_coev_bytes,
+    bool &out_coev_present,
+    std::string &out_coev_sha256,
+    std::string *out_effective_url) const {
+    out_corim_bytes.clear();
+    out_coev_bytes.clear();
+    out_coev_present = false;
+    out_coev_sha256.clear();
+    if (out_effective_url != nullptr) {
+        *out_effective_url = url;
+    }
+    if (callback == nullptr) {
+        return Error::BadArgument;
+    }
+
+    std::string effective;
+    Error resolve_err = resolve_and_authorize(url, effective);
+    if (out_effective_url != nullptr) {
+        *out_effective_url = effective;
+    }
+    if (resolve_err != Error::Ok) {
+        return resolve_err;
+    }
+
+    // Extract canonical RIM ID after the final '/' of the raw locator URL and
+    // reject empty or path-traversal segments.
+    const std::size_t last_slash = url.rfind('/');
+    if (last_slash == std::string::npos || last_slash + 1 >= url.size()) {
+        LOG_ERROR("RIM callback fetch: invalid rim-locator URL: " << url);
+        return Error::BadArgument;
+    }
+    const std::string rim_id = url.substr(last_slash + 1);
+    if (rim_id.find("..") != std::string::npos ||
+        rim_id.find('/') != std::string::npos ||
+        rim_id.find('\\') != std::string::npos) {
+        LOG_ERROR("RIM callback fetch: unsafe RIM ID in locator URL: " << url);
+        return Error::BadArgument;
+    }
+
+    nvat_byte_buf_t collateral_buf = nullptr;
+    nvat_rc_t cb_rc = callback(
+        user_data,
+        NVAT_COLLATERAL_KIND_CORIM,
+        rim_id.c_str(),
+        &collateral_buf);
+
+    struct ByteBufGuard {
+        nvat_byte_buf_t *ptr;
+        ~ByteBufGuard() {
+            if (ptr != nullptr && *ptr != nullptr) {
+                nvat_byte_buf_free(ptr);
+            }
+        }
+    } guard{&collateral_buf};
+
+    if (cb_rc == NVAT_RC_COLLATERAL_NOT_FOUND ||
+        cb_rc == NVAT_RC_CACHE_OBJECT_NOT_FOUND ||
+        cb_rc == NVAT_RC_RIM_NOT_FOUND) {
+        LOG_ERROR("RIM callback fetch: CoRIM not found for RIM ID '" << rim_id << "'");
+        return Error::RimNotFound;
+    }
+    if (cb_rc != NVAT_RC_OK || collateral_buf == nullptr) {
+        LOG_ERROR("RIM callback fetch: callback failed (rc=" << cb_rc
+                  << ") for RIM ID '" << rim_id << "'");
+        return Error::RimInternalError;
+    }
+
+    const auto *raw_vec = reinterpret_cast<const std::vector<uint8_t> *>(collateral_buf);
+    if (raw_vec->empty()) {
+        LOG_ERROR("RIM callback fetch: callback returned empty buffer for RIM ID '"
+                  << rim_id << "'");
+        return Error::RimInvalidSchema;
+    }
+
+    // Support both raw CBOR/COSE CoRIM bytes and the RIM-service JSON envelope.
+    if ((*raw_vec)[0] == '{') {
+        std::string body(reinterpret_cast<const char *>(raw_vec->data()), raw_vec->size());
+        return extract_rim_service_bytes_with_coev(
+            effective, body, out_corim_bytes, out_coev_bytes,
+            out_coev_present, out_coev_sha256);
+    }
+
+    out_corim_bytes = *raw_vec;
+    return Error::Ok;
 }
 
 } // namespace nvattestation

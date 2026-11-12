@@ -87,6 +87,8 @@ NVAT_FREE_FUNCTION(detached_eat_options, DetachedEATOptions);
 NVAT_FREE_FUNCTION(cmw_collection, CmwCollection);
 NVAT_FREE_FUNCTION(corim_store, CorimStore);
 NVAT_FREE_FUNCTION(local_corim_verifier, LocalCorimVerifier);
+NVAT_FREE_FUNCTION(byte_buf, std::vector<uint8_t>);
+NVAT_FREE_FUNCTION(verify_call_options, CorimVerifyCallOptions);
 
 // === Core SDK ===
 
@@ -2393,6 +2395,165 @@ nvat_rc_t nvat_local_corim_verifier_set_default_hash_algorithms(
     auto* cpp_verifier = nvat_local_corim_verifier_to_cpp(verifier);
     cpp_verifier->set_default_hash_algorithms(std::move(cpp_algs));
     return NVAT_RC_OK;
+    NVAT_C_API_END
+}
+
+nvat_rc_t nvat_byte_buf_create(
+    nvat_byte_buf_t* out_buf,
+    const uint8_t* data,
+    size_t len
+) {
+    NVAT_C_API_BEGIN
+    if (out_buf == nullptr) {
+        return NVAT_RC_BAD_ARGUMENT;
+    }
+    *out_buf = nullptr;
+    if (len > 0 && data == nullptr) {
+        return NVAT_RC_BAD_ARGUMENT;
+    }
+    auto vec = make_unique<std::vector<uint8_t>>();
+    if (len > 0) {
+        vec->assign(data, data + len);
+    }
+    *out_buf = nvat_byte_buf_from_cpp(vec.release());
+    return NVAT_RC_OK;
+    NVAT_C_API_END
+}
+
+nvat_rc_t nvat_verify_call_options_create(nvat_verify_call_options_t* out_options) {
+    NVAT_C_API_BEGIN
+    if (out_options == nullptr) {
+        return NVAT_RC_BAD_ARGUMENT;
+    }
+    auto opts = make_unique<CorimVerifyCallOptions>();
+    opts->ocsp_options.enforce_next_update = true;
+    *out_options = nvat_verify_call_options_from_cpp(opts.release());
+    return NVAT_RC_OK;
+    NVAT_C_API_END
+}
+
+nvat_rc_t nvat_verify_call_options_set_collateral_callback(
+    nvat_verify_call_options_t options,
+    nvat_collateral_cb_t callback,
+    void* user_data
+) {
+    NVAT_C_API_BEGIN
+    if (options == nullptr) {
+        return NVAT_RC_BAD_ARGUMENT;
+    }
+    auto* cpp_opts = nvat_verify_call_options_to_cpp(options);
+    cpp_opts->collateral_callback = callback;
+    cpp_opts->collateral_user_data = user_data;
+    return NVAT_RC_OK;
+    NVAT_C_API_END
+}
+
+nvat_rc_t nvat_verify_call_options_set_require_ocsp_nonce(
+    nvat_verify_call_options_t options,
+    bool require_nonce
+) {
+    NVAT_C_API_BEGIN
+    if (options == nullptr) {
+        return NVAT_RC_BAD_ARGUMENT;
+    }
+    nvat_verify_call_options_to_cpp(options)->ocsp_options.require_nonce = require_nonce;
+    return NVAT_RC_OK;
+    NVAT_C_API_END
+}
+
+nvat_rc_t nvat_verify_call_options_set_enforce_ocsp_next_update(
+    nvat_verify_call_options_t options,
+    bool enforce_next_update
+) {
+    NVAT_C_API_BEGIN
+    if (options == nullptr) {
+        return NVAT_RC_BAD_ARGUMENT;
+    }
+    nvat_verify_call_options_to_cpp(options)->ocsp_options.enforce_next_update = enforce_next_update;
+    return NVAT_RC_OK;
+    NVAT_C_API_END
+}
+
+nvat_rc_t nvat_verify_call_options_set_verification_time(
+    nvat_verify_call_options_t options,
+    int64_t epoch_seconds
+) {
+    NVAT_C_API_BEGIN
+    if (options == nullptr || epoch_seconds < 0) {
+        return NVAT_RC_BAD_ARGUMENT;
+    }
+    nvat_verify_call_options_to_cpp(options)->ocsp_options.verification_time =
+        static_cast<time_t>(epoch_seconds);
+    return NVAT_RC_OK;
+    NVAT_C_API_END
+}
+
+nvat_rc_t nvat_local_corim_verifier_set_device_identity_roots(
+    nvat_local_corim_verifier_t verifier,
+    const char* const* root_cert_pems,
+    size_t num_roots
+) {
+    NVAT_C_API_BEGIN
+    if (verifier == nullptr || root_cert_pems == nullptr || num_roots == 0) {
+        return NVAT_RC_BAD_ARGUMENT;
+    }
+    std::vector<std::string> pems;
+    pems.reserve(num_roots);
+    for (size_t i = 0; i < num_roots; ++i) {
+        if (root_cert_pems[i] == nullptr || *root_cert_pems[i] == '\0') {
+            return NVAT_RC_BAD_ARGUMENT;
+        }
+        pems.emplace_back(root_cert_pems[i]);
+    }
+    return nvat_rc_from_cpp(
+        nvat_local_corim_verifier_to_cpp(verifier)->set_device_identity_trust_roots_pem(pems));
+    NVAT_C_API_END
+}
+
+nvat_rc_t nvat_local_corim_verifier_verify_cmw_ex(
+    const nvat_local_corim_verifier_t verifier,
+    const uint8_t* cmw_data,
+    size_t cmw_len,
+    nvat_cmw_format_t format,
+    const nvat_verify_call_options_t call_options,
+    nvat_ear_signing_options_t ear_signing_options,
+    nvat_str_t* out_ear_jwt,
+    nvat_str_t* out_ear_json
+) {
+    NVAT_C_API_BEGIN
+    if (verifier == nullptr || cmw_data == nullptr) {
+        LOG_ERROR("verifier or cmw_data is null");
+        return NVAT_RC_BAD_ARGUMENT;
+    }
+    auto* cpp_verifier = nvat_local_corim_verifier_to_cpp(verifier);
+    CmwFormat cpp_format{};
+    Error err = cmw_format_from_c(format, cpp_format);
+    if (err != Error::Ok) {
+        return nvat_rc_from_cpp(err);
+    }
+
+    const CorimVerifyCallOptions* cpp_call_opts =
+        (call_options != nullptr) ? nvat_verify_call_options_to_cpp(call_options) : nullptr;
+    const DetachedEATOptions* cpp_sign_opts =
+        (ear_signing_options != nullptr) ? nvat_detached_eat_options_to_cpp(ear_signing_options) : nullptr;
+
+    CorimAttestationResult result{};
+    std::string ear_jwt;
+    std::string* ear_jwt_ptr = (out_ear_jwt != nullptr) ? &ear_jwt : nullptr;
+    std::string ear_json;
+    std::string* ear_json_ptr = (out_ear_json != nullptr) ? &ear_json : nullptr;
+    err = cpp_verifier->verify_cmw_ex(
+        cmw_data, cmw_len, cpp_format, cpp_call_opts,
+        result, cpp_sign_opts, ear_jwt_ptr, ear_json_ptr);
+    if (err == Error::Ok && out_ear_jwt != nullptr) {
+        auto serialized = make_unique<std::string>(std::move(ear_jwt));
+        *out_ear_jwt = nvat_str_from_cpp(serialized.release());
+    }
+    if (err == Error::Ok && out_ear_json != nullptr) {
+        auto serialized = make_unique<std::string>(std::move(ear_json));
+        *out_ear_json = nvat_str_from_cpp(serialized.release());
+    }
+    return nvat_rc_from_cpp(err);
     NVAT_C_API_END
 }
 
