@@ -1567,6 +1567,34 @@ TEST_F(LocalCorimVerifierCoevTest, MissingFwVersionHintNamesTheUnusableInput) {
     EXPECT_TRUE(item.corims[0].locator.empty());
 }
 
+// An application/*+json hints record (MAA tunnels x-ms-runtime this way) is accepted by
+// the CMW parser but belongs to another consumer: it must not be read as the FSP
+// firmware-version hint, so even a payload that would be malformed under
+// application/json is ignored.
+TEST_F(LocalCorimVerifierCoevTest, VendorJsonHintsAreNotReadAsFirmwareVersionHint) {
+    std::string cmw_json =
+        blackwell_fsp_cmw_with_hints_payload(R"({"fwversion": 123})");
+    nlohmann::json root = nlohmann::json::parse(cmw_json);
+    root["gpu_0"]["hints"][0] = "application/vnd.microsoft.maa.x-ms-runtime+json";
+    cmw_json = root.dump();
+
+    LocalCorimVerifier verifier(make_store());
+    verifier.set_verify_revocation(false);
+    verifier.set_verify_rim_signature(false);
+
+    CorimAttestationResult result;
+    ASSERT_EQ(verifier.verify_cmw(
+                  reinterpret_cast<const uint8_t *>(cmw_json.data()),
+                  cmw_json.size(), CmwFormat::kJson, result),
+              Error::Ok);
+    ASSERT_FALSE(result.items.empty());
+    const auto &item = result.items[0];
+    EXPECT_NE(item.stage_error.message, "malformed hints record");
+    EXPECT_EQ(item.stage_error.message,
+              "could not build a RIM locator for FSP responder: "
+              "firmware-version hint does not match expected format");
+}
+
 TEST(LocalCorimVerifierTest, RimFetchFailureRecordedPerCorimAttemptAll) {
     std::string cmw_json;
     ASSERT_EQ(readFileIntoString(kRubinCmwPath, cmw_json), Error::Ok);

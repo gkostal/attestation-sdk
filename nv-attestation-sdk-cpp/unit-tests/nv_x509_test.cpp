@@ -561,3 +561,45 @@ TEST(AllCertsTrustedTest, MissingOcspInfoPasses) {
     std::vector<PerCertStatus> chain{root_placeholder_status(), no_ocsp};
     EXPECT_TRUE(all_certs_trusted(chain));
 }
+
+TEST(AllCertsTrustedTest, NonceNotRequiredWhenOptionDisabled) {
+    PerCertStatus no_nonce = good_cert_status();
+    no_nonce.ocsp->nonce_matches = false;
+    std::vector<PerCertStatus> chain{root_placeholder_status(), no_nonce};
+    OcspVerifyOptions options;
+    options.require_nonce = false;
+    EXPECT_TRUE(all_certs_trusted(chain, options));
+    // Default (legacy) options still require it.
+    EXPECT_FALSE(all_certs_trusted(chain, OcspVerifyOptions()));
+}
+
+TEST(AllCertsTrustedTest, ExpiredResponseOnlyFailsWhenNextUpdateEnforced) {
+    PerCertStatus stale = good_cert_status();
+    stale.ocsp->response_expired = true;
+    std::vector<PerCertStatus> chain{root_placeholder_status(), stale};
+    // Legacy: response_expired is reported but never consulted.
+    EXPECT_TRUE(all_certs_trusted(chain));
+    OcspVerifyOptions enforcing;
+    enforcing.enforce_next_update = true;
+    EXPECT_FALSE(all_certs_trusted(chain, enforcing));
+}
+
+TEST(AllCertsTrustedTest, OtherChecksStillApplyWhenNonceAndExpiryRelaxed) {
+    PerCertStatus bad_response = good_cert_status();
+    bad_response.ocsp->response_valid = false;
+    PerCertStatus revoked = good_cert_status();
+    revoked.ocsp->crl_status = OCSPStatus::REVOKED;
+    OcspVerifyOptions options;
+    options.require_nonce = false;
+    options.enforce_next_update = true;
+    EXPECT_FALSE(all_certs_trusted({root_placeholder_status(), bad_response}, options));
+    EXPECT_FALSE(all_certs_trusted({root_placeholder_status(), revoked}, options));
+}
+
+TEST(OcspVerifyOptionsTest, EffectiveTimeUsesPinnedTimeElseWallClock) {
+    OcspVerifyOptions options;
+    const time_t before = time(nullptr);
+    EXPECT_GE(options.effective_time(), before);
+    options.verification_time = 1700000000;
+    EXPECT_EQ(options.effective_time(), 1700000000);
+}

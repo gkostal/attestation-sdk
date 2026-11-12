@@ -62,6 +62,7 @@ add_executable(nv-attestation-unit-tests
     test_evidence_handler.cpp
     test_local_corim_verifier.cpp
     test_capi_corim_verifier.cpp
+    test_capi_collateral_cb.cpp
     local_https_test_server.cpp
     test_eat.cpp
     rim_test.cpp
@@ -235,6 +236,9 @@ add_custom_target(prepare-test-data-for-unit-tests ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_CURRENT_SOURCE_DIR}/testdata/sample_rims
         ${CMAKE_CURRENT_BINARY_DIR}/testdata/sample_rims
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_CURRENT_SOURCE_DIR}/testdata/sample_attestation_data
+        ${CMAKE_CURRENT_BINARY_DIR}/testdata/sample_attestation_data
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/prepare-test-data.sh
         ${CMAKE_CURRENT_BINARY_DIR}/testdata
     COMMENT "Preparing unit-test fixtures"

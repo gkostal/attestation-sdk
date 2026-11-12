@@ -42,3 +42,7 @@ for dir in "$TESTDATA/sample_rims/corim" "$TESTDATA/sample_rims/comid" "$TESTDAT
 done
 
 "$VENV_PY" "$TESTDATA/sample_rims/corim/generate_fixtures.py" >/dev/null
+
+# OCSP fixtures: REVOKED variants for the real Rubin chain + a full test-CA PKI with
+# GOOD/REVOKED responses (idempotent; written under $TESTDATA/ocsp_fixtures/generated).
+"$VENV_PY" "$REPO_ROOT/unit-tests/testdata/ocsp_fixtures/generate_test_ocsp_fixtures.py" "$TESTDATA"

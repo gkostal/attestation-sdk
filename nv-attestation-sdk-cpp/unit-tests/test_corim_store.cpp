@@ -18,9 +18,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "gtest/gtest.h"
@@ -67,6 +70,214 @@ TEST(CorimStoreTest, RawNonHttpsRejected) {
               Error::BadArgument);
     EXPECT_EQ(store.fetch("ftp://example.com/rim", body),
               Error::BadArgument);
+}
+
+// ---- per-call collateral (ICollateralProvider) ----------------------------
+
+class MapCollateral : public ICollateralProvider {
+  public:
+    std::map<std::string, std::vector<uint8_t>> corims;
+    Error failure = Error::Ok;  // returned for every lookup when not Ok
+    mutable std::vector<std::pair<CollateralKind, std::string>> requests;
+
+    Error get_collateral(CollateralKind kind, const std::string &key,
+                         std::vector<uint8_t> &out) const override {
+        requests.emplace_back(kind, key);
+        if (failure != Error::Ok) {
+            return failure;
+        }
+        auto found = corims.find(key);
+        if (found == corims.end()) {
+            return Error::CacheObjectNotFound;
+        }
+        out = found->second;
+        return Error::Ok;
+    }
+};
+
+constexpr const char *kVbiosLocator =
+    "https://rim.attestation.nvidia.com/v1/rim/GR100_081D_9900230000";
+
+Error fetch_collateral(const CorimStore &store, const std::string &url,
+                       const ICollateralProvider *collateral,
+                       std::vector<uint8_t> &out_corim,
+                       std::vector<uint8_t> *out_coev = nullptr,
+                       bool *out_coev_present = nullptr) {
+    std::vector<uint8_t> coev;
+    bool coev_present = false;
+    std::string coev_sha;
+    Error err = store.fetch_with_coev(url, out_corim, coev, coev_present,
+                                      coev_sha, nullptr, collateral);
+    if (out_coev != nullptr) {
+        *out_coev = coev;
+    }
+    if (out_coev_present != nullptr) {
+        *out_coev_present = coev_present;
+    }
+    return err;
+}
+
+TEST(RimLookupKeyTest, ExtractsCanonicalRimId) {
+    std::string key;
+    ASSERT_EQ(rim_lookup_key_from_locator(kVbiosLocator, key), Error::Ok);
+    EXPECT_EQ(key, "GR100_081D_9900230000");
+    ASSERT_EQ(rim_lookup_key_from_locator(
+                  "https://rim.attestation.nvidia.com/v1/rim/"
+                  "NV_GPU_DRIVER_GR100_620.54",
+                  key),
+              Error::Ok);
+    EXPECT_EQ(key, "NV_GPU_DRIVER_GR100_620.54");
+}
+
+TEST(RimLookupKeyTest, RejectsMalformedIds) {
+    const std::string prefix = "https://rim.attestation.nvidia.com/v1/rim/";
+    for (const std::string &bad :
+         {std::string(), std::string("a/b"), std::string("a\\b"),
+          std::string(".."), std::string("a..b"), std::string("../x"),
+          std::string("x/"), std::string("id?x=1"), std::string("id#frag"),
+          std::string("id\n"), std::string("id\x01")}) {
+        std::string key = "unchanged";
+        EXPECT_EQ(rim_lookup_key_from_locator(prefix + bad, key),
+                  Error::BadArgument)
+            << "id: " << bad;
+    }
+}
+
+TEST(RimLookupKeyTest, OtherLocatorsPassThroughUnchanged) {
+    std::string key;
+    ASSERT_EQ(rim_lookup_key_from_locator("https://rim.example.org/v9/x/y", key),
+              Error::Ok);
+    EXPECT_EQ(key, "https://rim.example.org/v9/x/y");
+    // Only the exact NVIDIA RIM-service prefix is canonicalized.
+    ASSERT_EQ(rim_lookup_key_from_locator(
+                  "https://rim.attestation.nvidia.com/v2/rim/X", key),
+              Error::Ok);
+    EXPECT_EQ(key, "https://rim.attestation.nvidia.com/v2/rim/X");
+}
+
+TEST(CorimStoreCollateralTest, ServesRawCorimBytesByCanonicalId) {
+    MapCollateral collateral;
+    collateral.corims["GR100_081D_9900230000"] = {0xD9, 0x01, 0xF5, 0x01, 0x02};
+    CorimStore store;
+    std::vector<uint8_t> corim;
+    bool coev_present = true;
+    ASSERT_EQ(fetch_collateral(store, kVbiosLocator, &collateral, corim, nullptr,
+                               &coev_present),
+              Error::Ok);
+    EXPECT_EQ(corim, collateral.corims["GR100_081D_9900230000"]);
+    EXPECT_FALSE(coev_present);
+    ASSERT_EQ(collateral.requests.size(), 1U);
+    EXPECT_EQ(collateral.requests[0].first, CollateralKind::Corim);
+    EXPECT_EQ(collateral.requests[0].second, "GR100_081D_9900230000");
+}
+
+TEST(CorimStoreCollateralTest, UnwrapsRimServiceJsonEnvelope) {
+    const std::vector<uint8_t> rim = {1, 2, 3, 4};
+    const std::vector<uint8_t> coev = {9, 8, 7};
+    std::string rim_b64, coev_b64;
+    ASSERT_EQ(encode_base64(rim, rim_b64), Error::Ok);
+    ASSERT_EQ(encode_base64(coev, coev_b64), Error::Ok);
+    const std::string envelope = "\n  {\"rim\":\"" + rim_b64 + "\",\"coev\":\"" +
+                                 coev_b64 + "\",\"coev_sha256\":\"abc\"}";
+    MapCollateral collateral;
+    collateral.corims["GR100_081D_9900230000"] =
+        std::vector<uint8_t>(envelope.begin(), envelope.end());
+
+    CorimStore store;
+    std::vector<uint8_t> out_rim, out_coev;
+    bool coev_present = false;
+    ASSERT_EQ(fetch_collateral(store, kVbiosLocator, &collateral, out_rim,
+                               &out_coev, &coev_present),
+              Error::Ok);
+    EXPECT_EQ(out_rim, rim);
+    EXPECT_TRUE(coev_present);
+    EXPECT_EQ(out_coev, coev);
+}
+
+TEST(CorimStoreCollateralTest, MalformedEnvelopeIsAnInternalRimError) {
+    MapCollateral collateral;
+    collateral.corims["GR100_081D_9900230000"] = {'{', 'n', 'o', 't', ' ', 'j'};
+    CorimStore store;
+    std::vector<uint8_t> corim;
+    EXPECT_EQ(fetch_collateral(store, kVbiosLocator, &collateral, corim),
+              Error::RimInternalError);
+}
+
+TEST(CorimStoreCollateralTest, MissingCollateralIsRimNotFound) {
+    MapCollateral collateral;
+    CorimStore store;
+    std::vector<uint8_t> corim;
+    EXPECT_EQ(fetch_collateral(store, kVbiosLocator, &collateral, corim),
+              Error::RimNotFound);
+    // A store that "has" the key but with no bytes is the same as absent.
+    collateral.corims["GR100_081D_9900230000"] = {};
+    EXPECT_EQ(fetch_collateral(store, kVbiosLocator, &collateral, corim),
+              Error::RimNotFound);
+}
+
+TEST(CorimStoreCollateralTest, LookupFailureIsAnInternalRimError) {
+    MapCollateral collateral;
+    collateral.failure = Error::InternalError;
+    CorimStore store;
+    std::vector<uint8_t> corim;
+    EXPECT_EQ(fetch_collateral(store, kVbiosLocator, &collateral, corim),
+              Error::RimInternalError);
+}
+
+// The allowlist vets the raw URL before the collateral store is ever asked.
+TEST(CorimStoreCollateralTest, AllowlistStillEnforcedAndProviderNotAsked) {
+    MapCollateral collateral;
+    collateral.corims["anything"] = {1};
+    CorimStore store;
+    std::vector<uint8_t> corim;
+    EXPECT_EQ(fetch_collateral(store, "https://attacker.example.com/anything",
+                               &collateral, corim),
+              Error::BadArgument);
+    EXPECT_EQ(fetch_collateral(store, "file:///etc/passwd", &collateral, corim),
+              Error::BadArgument);
+    EXPECT_TRUE(collateral.requests.empty());
+}
+
+TEST(CorimStoreCollateralTest, MalformedRimIdIsRejectedWithoutALookup) {
+    MapCollateral collateral;
+    CorimStore store;
+    std::vector<uint8_t> corim;
+    EXPECT_EQ(fetch_collateral(store,
+                               "https://rim.attestation.nvidia.com/v1/rim/../../etc/passwd",
+                               &collateral, corim),
+              Error::BadArgument);
+    EXPECT_EQ(fetch_collateral(store, "https://rim.attestation.nvidia.com/v1/rim/",
+                               &collateral, corim),
+              Error::BadArgument);
+    EXPECT_TRUE(collateral.requests.empty());
+}
+
+// With a collateral provider there is no rewrite, no file read, no HTTP and no
+// shared cache: a stale/other-call cache entry must not satisfy the lookup, and
+// the provider's bytes must not be written into the shared cache.
+TEST(CorimStoreCollateralTest, BypassesRewritesFilesAndSharedCache) {
+    CorimStore store;
+    // A rewrite to a missing file would make a legacy fetch fail.
+    ASSERT_EQ(store.add_url_rewrite(kVbiosLocator,
+                                    "file:///nonexistent/nvat-test/vbios.cbor"),
+              Error::Ok);
+    auto cache = std::make_shared<NvCache>(
+        std::make_shared<NvCacheOptions>(1 << 20, 3600));
+    store.set_cache(cache);
+
+    MapCollateral collateral;
+    collateral.corims["GR100_081D_9900230000"] = {0xAA, 0xBB};
+    std::vector<uint8_t> corim;
+    ASSERT_EQ(fetch_collateral(store, kVbiosLocator, &collateral, corim),
+              Error::Ok);
+    EXPECT_EQ(corim, (std::vector<uint8_t>{0xAA, 0xBB}));
+
+    std::shared_ptr<void> cached;
+    EXPECT_NE(cache->get("file:///nonexistent/nvat-test/vbios.cbor", cached),
+              Error::Ok);
+    // Legacy path (no provider) still tries the rewritten file and fails.
+    EXPECT_EQ(fetch_collateral(store, kVbiosLocator, nullptr, corim),
+              Error::RimNotFound);
 }
 
 TEST(CorimStoreTest, RawHttpsOutsideAllowlistRejected) {

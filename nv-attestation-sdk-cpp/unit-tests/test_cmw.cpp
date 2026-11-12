@@ -121,6 +121,58 @@ TEST(CmwParseTest, RejectsHintsWithWrongMediaType) {
     EXPECT_EQ(parse_root(root, cmw), Error::EvidenceMalformed);
 }
 
+constexpr const char *kMaaRuntimeHintsMediaType =
+    "application/vnd.microsoft.maa.x-ms-runtime+json";
+
+TEST(CmwParseTest, AcceptsStructuredSuffixJsonHints) {
+    nlohmann::json root = valid_root();
+    root["gpu_0"]["hints"] = record(kMaaRuntimeHintsMediaType, filler(24, 9));
+    CmwCollection cmw;
+    ASSERT_EQ(parse_root(root, cmw), Error::Ok);
+    const CmwEvidenceItem &item = cmw.evidence_items()[0].second;
+    ASSERT_NE(item.hints, nullptr);
+    EXPECT_EQ(item.hints->media_type, kMaaRuntimeHintsMediaType);
+    EXPECT_EQ(item.hints->value, filler(24, 9));
+}
+
+TEST(CmwParseTest, RejectsHintsMediaTypesThatAreNotJson) {
+    for (const char *media_type :
+         {"application/+json", "application/foo/bar+json", "text/foo+json",
+          "application/foo+jsonx", "application/foo+cbor", "+json",
+          "application/foo bar+json"}) {
+        nlohmann::json root = valid_root();
+        root["gpu_0"]["hints"] = record(media_type, filler(24, 9));
+        CmwCollection cmw;
+        EXPECT_EQ(parse_root(root, cmw), Error::EvidenceMalformed)
+            << media_type;
+    }
+}
+
+// MAA tunnels its x-ms-runtime blob in a +json hints record. It must parse and
+// survive a serialize round trip untouched (the verifier-level check that the
+// input digest covers the exact submitted bytes lives in test_capi_collateral_cb.cpp).
+TEST(CmwParseTest, StructuredSuffixHintsRoundTrip) {
+    const std::string runtime_blob = R"({"x-ms-runtime":{"keys":[{"kid":"k"}]}})";
+    nlohmann::json root = valid_root();
+    root["gpu_0"]["hints"] = record(
+        kMaaRuntimeHintsMediaType,
+        std::vector<uint8_t>(runtime_blob.begin(), runtime_blob.end()));
+
+    CmwCollection original;
+    ASSERT_EQ(parse_root(root, original), Error::Ok);
+    std::vector<uint8_t> serialized;
+    ASSERT_EQ(original.serialize(CmwFormat::kJson, serialized), Error::Ok);
+    CmwCollection reparsed;
+    ASSERT_EQ(CmwCollection::parse(serialized.data(), serialized.size(),
+                                   CmwFormat::kJson, reparsed),
+              Error::Ok);
+    const CmwEvidenceItem &item = reparsed.evidence_items()[0].second;
+    ASSERT_NE(item.hints, nullptr);
+    EXPECT_EQ(item.hints->media_type, kMaaRuntimeHintsMediaType);
+    EXPECT_EQ(std::string(item.hints->value.begin(), item.hints->value.end()),
+              runtime_blob);
+}
+
 TEST(CmwParseTest, HintsSlotOptional) {
     CmwCollection cmw;
     ASSERT_EQ(parse_root(valid_root(), cmw), Error::Ok);
