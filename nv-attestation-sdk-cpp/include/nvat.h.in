@@ -2241,7 +2241,9 @@ nvat_rc_t nvat_verify_call_options_set_require_ocsp_nonce(
  *        the verification time) makes the evidence untrusted (default: true).
  *
  * With false the expiry is still reported (ocsp_crl_response_expired = true)
- * but not enforced.
+ * but not enforced. A response without a nextUpdate is treated as valid for
+ * one hour after its thisUpdate. thisUpdate itself is not compared with the
+ * verification time.
  */
 nvat_rc_t nvat_verify_call_options_set_enforce_ocsp_next_update(
     nvat_verify_call_options_t options,
@@ -2249,9 +2251,10 @@ nvat_rc_t nvat_verify_call_options_set_enforce_ocsp_next_update(
 );
 
 /**
- * @brief Override "now" for the appraisal (Unix epoch seconds).
+ * @brief Override "now" for the appraisal (Unix epoch seconds, >= 0).
  *
- * 0 (default) uses the current system time. The time is used for certificate
+ * 0 (default) uses the current system time; a negative value is rejected with
+ * @ref NVAT_RC_BAD_ARGUMENT. The time is used for certificate
  * expiry, OCSP response expiry (nextUpdate) and validating the OCSP responder's
  * certificate chain. (Device-chain anchoring itself never checks validity
  * periods; expiry is reported per certificate.) The EAR's own iat/nbf/exp

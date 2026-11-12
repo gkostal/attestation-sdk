@@ -640,7 +640,8 @@ TEST(CApiCollateralCbTest, MissingOcspIsContraindicatedWithErrorStatusNotAFailur
     EXPECT_EQ(chain[kRootIndex]["ocsp_crl_status"], "not_checked");
     EXPECT_EQ(evidence_claims(outcome.ear)["signature_verified"], false);
     // The CoRIMs were still fetched and matched.
-    for (json rim : submod(outcome.ear)["ear_verifier_claims"]["ear_nvidia_rims"]) {
+    json rims = rim_results(outcome.ear);
+    for (json rim : rims) {
         EXPECT_EQ(rim["fetched"], true);
     }
 }
@@ -674,7 +675,8 @@ TEST(CApiCollateralCbTest, CallbackFailuresAreTreatedLikeMissingCollateral) {
         ASSERT_EQ(outcome.rc, NVAT_RC_OK) << code;
         EXPECT_EQ(status_of(outcome.ear), "contraindicated") << code;
         EXPECT_EQ(cert_chain(outcome.ear)[kBromIndex]["ocsp_crl_status"], "error") << code;
-        for (json rim : submod(outcome.ear)["ear_verifier_claims"]["ear_nvidia_rims"]) {
+        json rims = rim_results(outcome.ear);
+        for (json rim : rims) {
             EXPECT_EQ(rim["fetched"], false) << code;
         }
     }

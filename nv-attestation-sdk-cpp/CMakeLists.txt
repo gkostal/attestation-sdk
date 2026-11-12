@@ -558,6 +558,36 @@ set_target_properties(nvat PROPERTIES
   SOVERSION "${NV_ATTESTATION_SOVERSION}"
 )
 
+# Export only the nvat_* C ABI from libnvat.so (Linux). The unit tests link internal
+# (non-nvat_*) symbols, so this is opt-in and incompatible with BUILD_TESTING; it is
+# meant for the prebuilt library that is embedded in a host process which has its own
+# OpenSSL (see dev/maa-prototype).
+option(NVAT_HIDE_INTERNAL_SYMBOLS
+  "Export only nvat_* symbols from libnvat.so (hides statically linked OpenSSL, curl, ...). Linux only; incompatible with BUILD_TESTING."
+  OFF)
+if(NVAT_HIDE_INTERNAL_SYMBOLS)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "NVAT_HIDE_INTERNAL_SYMBOLS is only supported on Linux")
+  endif()
+  if(NOT BUILD_SHARED_LIBS)
+    message(FATAL_ERROR "NVAT_HIDE_INTERNAL_SYMBOLS requires BUILD_SHARED_LIBS=ON")
+  endif()
+  if(BUILD_TESTING OR BUILD_FUZZ_TESTS)
+    message(FATAL_ERROR "NVAT_HIDE_INTERNAL_SYMBOLS hides symbols the unit/fuzz tests link against; build those without it")
+  endif()
+  message("-- Hiding internal symbols: libnvat exports only nvat_*")
+  set_target_properties(nvat PROPERTIES
+    C_VISIBILITY_PRESET hidden
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/nvat.lds"
+  )
+  target_link_options(nvat PRIVATE
+    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/nvat.lds"
+    "-Wl,--exclude-libs,ALL"
+  )
+endif()
+
 target_include_directories(nvat
   PUBLIC
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>

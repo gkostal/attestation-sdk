@@ -18,6 +18,7 @@
 #include "nv_attestation/corim_evidence/corim_store.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -130,8 +131,8 @@ Error fetch_from_collateral(const ICollateralProvider &collateral,
     }
 
     // A RIM-service JSON envelope starts with '{' (CoRIM CBOR/COSE never does).
-    const auto first = std::find_if(bytes.begin(), bytes.end(), [](uint8_t c) {
-        return c != ' ' && c != '\t' && c != '\r' && c != '\n';
+    const auto first = std::find_if(bytes.begin(), bytes.end(), [](uint8_t byte) {
+        return byte != ' ' && byte != '\t' && byte != '\r' && byte != '\n';
     });
     if (first != bytes.end() && *first == '{') {
         return extract_rim_service_bytes_with_coev(
@@ -152,8 +153,9 @@ Error rim_lookup_key_from_locator(const std::string &url, std::string &out_key) 
     }
     const std::string id = url.substr(prefix.size());
     const bool has_forbidden_char =
-        std::any_of(id.begin(), id.end(), [](unsigned char c) {
-            return c == '/' || c == '\\' || c == '?' || c == '#' || c < 0x20 || c == 0x7f;
+        std::any_of(id.begin(), id.end(), [](unsigned char ch) {
+            return ch == '/' || ch == '\\' || ch == '?' || ch == '#' ||
+                   std::iscntrl(ch) != 0;
         });
     if (id.empty() || has_forbidden_char || id.find("..") != std::string::npos) {
         return Error::BadArgument;

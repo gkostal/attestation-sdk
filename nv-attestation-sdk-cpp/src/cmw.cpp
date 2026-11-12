@@ -67,8 +67,9 @@ bool is_json_hints_media_type(const std::string &media_type) {
     const std::string subtype = media_type.substr(
         prefix.size(), media_type.size() - prefix.size() - suffix.size());
     // RFC 6838 restricted-name characters.
-    return std::all_of(subtype.begin(), subtype.end(), [](unsigned char c) {
-        return std::isalnum(c) != 0 || std::string("!#$&-^_.+").find(static_cast<char>(c)) != std::string::npos;
+    return std::all_of(subtype.begin(), subtype.end(), [](unsigned char ch) {
+        return std::isalnum(ch) != 0 ||
+               std::string("!#$&-^_.+").find(static_cast<char>(ch)) != std::string::npos;
     });
 }
 
