@@ -390,6 +390,7 @@ Error verify_cose_sign1(
         return error;
     }
 
+    cert_chain.set_verification_time(options.ocsp_options.verification_time);
     error = cert_chain.verify();
     if (error != Error::Ok) {
         LOG_ERROR("Certificate chain verification failed");
@@ -408,7 +409,9 @@ Error verify_cose_sign1(
             LOG_ERROR("Failed to generate per-cert status");
             return error;
         }
-        if (!all_certs_trusted(out_result.cert_chain_claims)) {
+        if (!all_certs_trusted(out_result.cert_chain_claims,
+                               options.ocsp_options.require_nonce,
+                               options.ocsp_options.enforce_next_update)) {
             LOG_ERROR("Signing cert chain has an expired, revoked, or untrusted-OCSP-status certificate");
             return Error::CertChainVerificationFailure;
         }

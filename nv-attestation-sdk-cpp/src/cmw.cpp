@@ -165,7 +165,14 @@ Error parse_evidence_item(const nlohmann::json &node,
         if (err != Error::Ok) {
             return err;
         }
-        if (record->media_type != kCmwMediaJson) {
+        const auto& media = record->media_type;
+        const bool json_suffix = media.size() > 17 &&
+            media.compare(0, 12, "application/") == 0 &&
+            media.compare(media.size() - 5, 5, "+json") == 0 &&
+            media.find_first_not_of(
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$&^_.+-",
+                12) == std::string::npos;
+        if (media != kCmwMediaJson && !json_suffix) {
             LOG_ERROR("CMW evidence item '"
                       << label << "' has unsupported hints media type: "
                       << record->media_type);

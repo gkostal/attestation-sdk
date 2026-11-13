@@ -26,6 +26,7 @@
 #include "nv_attestation/error.h"
 #include "nv_attestation/nv_cache.h"
 #include "nv_attestation/nv_http.h"
+#include "nv_attestation/collateral.h"
 
 namespace nvattestation {
 
@@ -52,6 +53,9 @@ class CorimStore {
 
     // Injects any INvCache implementation (useful for testing or custom backends).
     void set_cache(std::shared_ptr<INvCache> cache);
+
+    // Request-local routing: bypass native fetches and all shared cache state.
+    void set_collateral_callback(CollateralCallback callback);
 
     // out_effective_url (optional) receives the post-rewrite URL, even on error.
     // A thin wrapper over fetch_impl() that discards any CoEV payload.
@@ -90,6 +94,7 @@ class CorimStore {
     HttpOptions m_http_options;
     NvHttpClient m_http_client;
     std::shared_ptr<INvCache> m_cache;
+    CollateralCallback m_collateral;
 };
 
 } // namespace nvattestation

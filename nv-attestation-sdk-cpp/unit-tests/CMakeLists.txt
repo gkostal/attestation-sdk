@@ -10,6 +10,23 @@ list(APPEND CMAKE_MODULE_PATH "${_sdk_cmake_dir}")
 
 include(nvat_fetch_gtest)
 
+if(TARGET nvat AND BUILD_SHARED_LIBS)
+    add_executable(nvat-offline-cabi-tests test_capi_offline.cpp)
+    add_executable(nvat-cabi-header-check capi_offline_header.c)
+    target_link_libraries(nvat-cabi-header-check PRIVATE nvat)
+    add_dependencies(nvat-offline-cabi-tests nvat-cabi-header-check)
+    add_test(NAME nvat-cabi-header-check COMMAND nvat-cabi-header-check)
+    set_tests_properties(nvat-cabi-header-check PROPERTIES LABELS "unit;offline;cabi")
+    target_link_libraries(nvat-offline-cabi-tests PRIVATE
+        nvat GTest::gtest nlohmann_json::nlohmann_json)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(nvat-offline-cabi-tests PRIVATE -Wno-c++17-attribute-extensions)
+    endif()
+    add_test(NAME nvat-offline-cabi-tests COMMAND nvat-offline-cabi-tests)
+    set_tests_properties(nvat-offline-cabi-tests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" LABELS "unit;offline;cabi")
+endif()
+
 find_package(CURL REQUIRED)
 find_package(LibXml2 REQUIRED)
 find_package(OpenSSL REQUIRED)
@@ -217,7 +234,11 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     target_link_libraries(nv-attestation-unit-tests PRIVATE nvat::nvat)
 else()
     # CMake file is being invoked as part of subdirectory from another CMake file
-    target_link_libraries(nv-attestation-unit-tests PRIVATE nvat)
+    if(TARGET nvat_test_internal)
+        target_link_libraries(nv-attestation-unit-tests PRIVATE nvat_test_internal)
+    else()
+        target_link_libraries(nv-attestation-unit-tests PRIVATE nvat)
+    endif()
     # Make build-tree test execution reliable via ctest without LD_LIBRARY_PATH.
     set_target_properties(nv-attestation-unit-tests PROPERTIES
         BUILD_RPATH "$<TARGET_FILE_DIR:nvat>"

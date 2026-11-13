@@ -29,6 +29,7 @@
 #include "nv_attestation/verify.h"
 #include "nv_attestation/nv_http.h"
 #include "nv_attestation/nv_cache.h"
+#include "nv_attestation/collateral.h"
 
 namespace nvattestation {
 
@@ -232,7 +233,23 @@ private:
     friend class NvHttpOcspClientStatusTest_MissingNextUpdateUsesDefaultTtl_Test;
     friend class NvHttpOcspClientHashTest_ConfiguredAlgorithmsBuildExpectedCertIds_Test;
     friend class NvHttpOcspCacheClient;
+    friend class CallbackOcspClient;
 
+};
+
+class CallbackOcspClient : public IOcspHttpClient {
+public:
+    CallbackOcspClient(CollateralCallback callback, time_t verification_time)
+        : m_callback(std::move(callback)), m_verification_time(verification_time) {}
+    Error get_ocsp_response(
+        const nv_unique_ptr<X509>& subject_cert,
+        const nv_unique_ptr<X509>& issuer_cert,
+        const nv_unique_ptr<stack_st_X509>& intermediates,
+        const nv_unique_ptr<X509_STORE>& trust_store,
+        NvOcspResponse& out_ocsp_response) override;
+private:
+    CollateralCallback m_callback;
+    time_t m_verification_time;
 };
 
 class NvHttpOcspCacheClient: public IOcspHttpClient {

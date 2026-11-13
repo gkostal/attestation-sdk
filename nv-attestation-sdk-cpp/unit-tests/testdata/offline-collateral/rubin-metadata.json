@@ -1,0 +1,10 @@
+{
+  "source": "https://ocsp.ndis.nvidia.com",
+  "verification_time": 1794578817,
+  "expired_verification_time": 1794665217,
+  "responses": [
+    {"lookup_key":"65129acf8647f4285e8d07c09c5320949aacff2b8dd3917540b15d8833813f52_410a3021db2466fe7c","this_update":1794578757,"produced_at":1794578757,"next_update":1794665157,"sha256":"c9c1779c8dc20144250fdea36b494bd185bdb2e66c23959b62152233395d642e"},
+    {"lookup_key":"115a377933f4e800ffcb8543a33536375173f75c66e1dd02db5f849fff113f27_44d719c02afb194c5c0bc7497c2e81bf","this_update":1794577770,"produced_at":1794577770,"next_update":1794664170,"sha256":"a714fb64119153da0fcad559d3420c386d56b1f9750f506ba17b4246e6b67773"},
+    {"lookup_key":"6f0264e4bce92d49cd76d17f79e2719ea1972af859fbae04eb2516b8317a8e9e_02c2f9f328f20749cda9060e7d165256","this_update":1794577770,"produced_at":1794577770,"next_update":1794664170,"sha256":"09e235617b9aa8cba6212468248ec5e58dd21b5d05fb2a99c360dbb99871bd3e"}
+  ]
+}

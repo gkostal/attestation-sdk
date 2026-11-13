@@ -1,0 +1,7 @@
+{
+  "synthetic_ica_key": "f7ebd11632caf73ff115c1f31343d06d3d79647a4d0dbd881d168ce093d81d41_02",
+  "synthetic_leaf_key": "6e206985f229dddbca13e4e885b9bd769ff8802a9dda3efab6827ee41ee23cb2_03",
+  "synthetic_next_update": 2051222400,
+  "verification_time": 1794578816,
+  "warning": "Test CA only; do not install as a production trust anchor."
+}

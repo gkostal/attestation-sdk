@@ -45,6 +45,11 @@ namespace nvattestation
 
    public:
       OcspVerifyOptions() {}
+      time_t verification_time = 0;
+      bool require_nonce = true;
+      // Legacy API did not gate appraisals on nextUpdate.
+      bool enforce_next_update = false;
+      bool skip_without_aia = false;
    };
 
    class EvidencePolicy {

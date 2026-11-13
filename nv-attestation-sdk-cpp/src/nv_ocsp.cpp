@@ -157,6 +157,81 @@ Error NvHttpOcspClient::create_cert_id(
     return Error::Ok;
 }
 
+Error CallbackOcspClient::get_ocsp_response(
+    const nv_unique_ptr<X509>& subject_cert,
+    const nv_unique_ptr<X509>& issuer_cert,
+    const nv_unique_ptr<stack_st_X509>& intermediates,
+    const nv_unique_ptr<X509_STORE>& trust_store,
+    NvOcspResponse& out_ocsp_response) {
+    out_ocsp_response = NvOcspResponse{};
+    if (NvHttpOcspClient::first_ocsp_responder_url(subject_cert.get()).empty()) {
+        out_ocsp_response.skipped = true;
+        return Error::Ok;
+    }
+    nv_unique_ptr<OCSP_CERTID> id;
+    Error err = NvHttpOcspClient::create_cert_id(
+        OcspCertIdHashAlgorithm::Sha256, subject_cert.get(), issuer_cert.get(), id);
+    if (err != Error::Ok) {
+        return err;
+    }
+    ASN1_OCTET_STRING* issuer_key = nullptr;
+    ASN1_INTEGER* serial = nullptr;
+    if (OCSP_id_get0_info(nullptr, nullptr, &issuer_key, &serial, id.get()) != 1 ||
+        issuer_key == nullptr || serial == nullptr) {
+        return Error::InternalError;
+    }
+    nv_unique_ptr<BIGNUM> serial_bn(ASN1_INTEGER_to_BN(serial, nullptr));
+    if (!serial_bn || BN_is_negative(serial_bn.get())) {
+        return Error::OcspInvalidRequest;
+    }
+    auto free_hex = [](char* p) { OPENSSL_free(p); };
+    std::unique_ptr<char, decltype(free_hex)> serial_hex(
+        BN_bn2hex(serial_bn.get()), free_hex);
+    if (!serial_hex) {
+        return Error::InternalError;
+    }
+    std::string serial_text(serial_hex.get());
+    std::transform(serial_text.begin(), serial_text.end(), serial_text.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::vector<uint8_t> key_bytes(ASN1_STRING_get0_data(issuer_key),
+        ASN1_STRING_get0_data(issuer_key) + ASN1_STRING_length(issuer_key));
+    const std::string key = to_hex_string(key_bytes, false) + "_" + serial_text;
+    std::vector<uint8_t> bytes;
+    err = m_callback(CollateralKind::OcspResponse, key, bytes);
+    if (err != Error::Ok) {
+        LOG_DEBUG("Cached OCSP collateral unavailable for " << key);
+        return err == Error::RimNotFound ? Error::OcspServerError : err;
+    }
+    nv_unique_ptr<OCSP_BASICRESP> basic;
+    err = NvHttpOcspClient::get_ocsp_response_from_raw(
+        std::string(bytes.begin(), bytes.end()), basic);
+    if (err != Error::Ok) {
+        return err;
+    }
+    if (m_verification_time != 0) {
+        X509_VERIFY_PARAM_set_time(X509_STORE_get0_param(trust_store.get()),
+                                  m_verification_time);
+    }
+    if (OCSP_basic_verify(basic.get(), intermediates.get(), trust_store.get(), 0) != 1) {
+        LOG_WARN("Cached OCSP response verification failed: " << get_openssl_error());
+        return Error::OcspInvalidResponse;
+    }
+    err = NvHttpOcspClient::get_ocsp_status(basic, id, out_ocsp_response);
+    if (err != Error::Ok) {
+        LOG_WARN("Cached OCSP status unavailable for CertID " << key);
+        return err;
+    }
+    const time_t now = m_verification_time != 0 ? m_verification_time : time(nullptr);
+    // Never accept a status from the future, even when nextUpdate enforcement
+    // is disabled for static-fixture replay. Permit five minutes of clock skew.
+    out_ocsp_response.response_valid =
+        out_ocsp_response.thisupd <= now + 300 &&
+        out_ocsp_response.producedat <= now + 300 &&
+        out_ocsp_response.nextupd >= out_ocsp_response.thisupd;
+    out_ocsp_response.nonce_matches = false;
+    return Error::Ok;
+}
+
 Error NvHttpOcspClient::build_request(
     X509* subject_cert,
     X509* issuer_cert,

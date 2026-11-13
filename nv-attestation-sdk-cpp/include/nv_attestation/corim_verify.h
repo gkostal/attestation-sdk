@@ -16,6 +16,7 @@
  */
 
 #pragma once
+#include <mutex>
 
 #include <map>
 #include <memory>
@@ -411,6 +412,7 @@ class LocalCorimVerifier {
     // Append a root CA PEM to the device-identity trust store. The chain
     // on each CMW evidence item must anchor to one of these roots.
     Error add_device_identity_trust_root_pem(std::string pem);
+    Error set_device_identity_roots(std::vector<std::string> roots);
 
     // When disabled, the injected OCSP client is not consulted and chains are
     // treated as not revoked.
@@ -459,9 +461,15 @@ class LocalCorimVerifier {
                      CmwFormat format, CorimAttestationResult &out_result,
                      const DetachedEATOptions *ear_signing_options = nullptr,
                      std::string *out_ear_jwt = nullptr,
-                     std::string *out_ear_json = nullptr) const;
+                     std::string *out_ear_json = nullptr,
+                     const VerifyCallOptions *call_options = nullptr) const;
 
   private:
+    Error verify_cmw_impl(const uint8_t *cmw_data, std::size_t cmw_len,
+                         CmwFormat format, CorimAttestationResult &out_result,
+                         const DetachedEATOptions *ear_signing_options,
+                         std::string *out_ear_jwt,
+                         std::string *out_ear_json) const;
     EvidenceItemAppraisal
     appraise_item(const std::string &label, const CmwEvidenceItem &item) const;
 
@@ -490,6 +498,9 @@ class LocalCorimVerifier {
     EvidenceHandlerSettings m_evidence_handler_settings;
     std::vector<std::string> m_backup_rim_locators;
     std::vector<HashAlgorithm> m_default_hash_algorithms{HashAlgorithm::Sha256};
+    OcspVerifyOptions m_ocsp_options;
+    // Copies made under this lock are immutable request-local snapshots.
+    std::shared_ptr<std::mutex> m_configuration_mutex = std::make_shared<std::mutex>();
 };
 
 } // namespace nvattestation

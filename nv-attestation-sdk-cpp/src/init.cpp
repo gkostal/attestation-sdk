@@ -18,6 +18,7 @@
 #include <functional>
 #include <vector>
 #include <memory>
+#include <ctime>
 
 #include "spdlog/spdlog.h"
 #include <curl/curl.h>
@@ -145,6 +146,14 @@ Error init(const std::shared_ptr<SdkOptions>& sdk_options) {
         Error err = handle_init_logger(g_sdkOptions);
         if (err != Error::Ok) {
             return err;
+        }
+
+        // glibc's first UTC conversion lazily opens /etc/localtime. Complete
+        // that initialization here, never inside an offline verification call.
+        const time_t epoch = 0;
+        struct tm utc{};
+        if (gmtime_r(&epoch, &utc) == nullptr) {
+            return Error::InternalError;
         }
 
         // Initialize curl before xmlsec: curl_global_init also initialises OpenSSL.

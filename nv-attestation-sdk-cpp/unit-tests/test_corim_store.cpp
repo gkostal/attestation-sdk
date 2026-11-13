@@ -59,6 +59,51 @@ class TempFile {
     std::string m_path;
 };
 
+TEST(CorimStoreTest, CallbackAuthorizesRawUrlAndRejectsTraversal) {
+    CorimStore store;
+    int calls = 0;
+    store.set_collateral_callback([&](nvattestation::CollateralKind kind,
+                                      const std::string& key,
+                                      std::vector<uint8_t>& out) {
+        EXPECT_EQ(kind, nvattestation::CollateralKind::Corim);
+        EXPECT_EQ(key, "GR100_081D_9900230000");
+        ++calls;
+        out = {0xd9, 0x01, 0xf5};
+        return Error::Ok;
+    });
+    ASSERT_EQ(store.add_url_rewrite("https://rim.attestation.nvidia.com/",
+                                    "file:///never-read/"), Error::Ok);
+    std::vector<uint8_t> bytes;
+    EXPECT_EQ(store.fetch("https://evil.test/v1/rim/id", bytes), Error::BadArgument);
+    const std::string prefix = "https://rim.attestation.nvidia.com/v1/rim/";
+    for (const char* id : {"", "..", "a/b", "a\\b", "%2e%2e", "x?query", "x#fragment"}) {
+        EXPECT_EQ(store.fetch(prefix + id, bytes), Error::BadArgument);
+    }
+    EXPECT_EQ(calls, 0);
+    ASSERT_EQ(store.fetch(prefix + "GR100_081D_9900230000", bytes), Error::Ok);
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(bytes, (std::vector<uint8_t>{0xd9, 0x01, 0xf5}));
+}
+
+TEST(CorimStoreTest, CallbackCustomAllowedUrlRemainsRawAndNeverUsesCache) {
+    CorimStore store;
+    store.enable_in_memory_cache(4096, 3600);
+    ASSERT_EQ(store.add_allowed_url_prefix("https://custom.test/"), Error::Ok);
+    int calls = 0;
+    store.set_collateral_callback([&](nvattestation::CollateralKind,
+                                      const std::string& key,
+                                      std::vector<uint8_t>& out) {
+        EXPECT_EQ(key, "https://custom.test/manifest");
+        ++calls;
+        if (calls == 1) { out = {1, 2, 3}; return Error::Ok; }
+        return Error::RimNotFound;
+    });
+    std::vector<uint8_t> bytes;
+    EXPECT_EQ(store.fetch("https://custom.test/manifest", bytes), Error::Ok);
+    EXPECT_EQ(store.fetch("https://custom.test/manifest", bytes), Error::RimNotFound);
+    EXPECT_EQ(calls, 2);
+}
+
 TEST(CorimStoreTest, RawNonHttpsRejected) {
     CorimStore store;
     std::vector<uint8_t> body;

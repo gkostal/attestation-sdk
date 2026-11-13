@@ -1,0 +1,28 @@
+NVIDIA Attestation SDK offline collateral test fixtures
+Source: https://github.com/NVIDIA/attestation-sdk
+Modified source: https://github.com/gkostal/attestation-sdk
+License: Apache-2.0 (see accompanying LICENSE).
+
+rubin_vbios_example.cbor and rubin_driver_example.cbor were generated from the
+SDK's sample_rims/corim/*.diag examples. They are unsigned test reference values.
+rubin-cmw-cert-chain.pem was extracted from sample_attestation_data/rubin_evidence.cmw.json.
+The source CMW is unmodified. Its BROM serial is 410a3021db2466fe7c, not the serial
+418f2e55a169f0b0e3 in the separate gpu/rubinCertChain.txt sample.
+
+ocsp/*.der are genuine signed GOOD OCSPResponse captures from
+https://ocsp.ndis.nvidia.com on 2026-11-13. rubin-metadata.json records the actual
+CMW's three lookup keys, validity times and SHA-256 checksums. The additional
+response for the separate sample BROM certificate is retained, with its capture
+metadata in original-sample-metadata.json. These public certificate status
+responses are retained without modification for deterministic offline replay.
+
+test-root.pem, synthetic_evidence.cmw.json, synthetic-good/* and
+synthetic-revoked/* are generated test artifacts, NOT NVIDIA production identities.
+They retain the CMW's DTI-bearing certificate extensions and measurements, but use
+a generated test root, ICA and SPDM-signing leaf and a newly signed transcript.
+The revoked leaf response is signed and contains keyCompromise status.
+No private keys are retained. The test root must never be trusted in production.
+synthetic-metadata.json pins a valid replay time and the test OCSP lookup keys.
+
+Regeneration tools: scripts/capture-rubin-ocsp.sh and
+scripts/generate-offline-fixtures.cpp. Tests do not regenerate or fetch fixtures.

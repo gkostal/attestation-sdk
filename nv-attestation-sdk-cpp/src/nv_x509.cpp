@@ -521,11 +521,15 @@ Error X509CertChain::collect_ocsp_responses(const OcspVerifyOptions& options, IO
     // exclude it — the leaf). Emit a synthetic skipped response for each,
     // so callers record them as NOT_CHECKED through the same path as a
     // cert with no AIA responder, instead of leaving them silently absent.
+    std::vector<bool> skipped(m_certs.size(), false);
     for (size_t idx = 0; idx < m_certs.size(); ++idx) {
         if (static_cast<int>(idx) >= start_indx &&
-            static_cast<int>(idx) <= static_cast<int>(m_certs.size()) - 2) {
+            static_cast<int>(idx) <= static_cast<int>(m_certs.size()) - 2 &&
+            !(options.skip_without_aia &&
+              NvHttpOcspClient::first_ocsp_responder_url(m_certs[idx].get()).empty())) {
             continue;
         }
+        skipped[idx] = true;
         NvOcspResponse not_applicable{};
         not_applicable.skipped = true;
         out.emplace_back(idx, not_applicable);
@@ -541,13 +545,14 @@ Error X509CertChain::collect_ocsp_responses(const OcspVerifyOptions& options, IO
         LOG_DEBUG("Processing cert: subject_idx" << subject_idx << ". " << get_cert_subject_issuer_str(m_certs[subject_idx].get()));
         int issuer_idx = subject_idx + 1;
 
-        NvOcspResponse ocsp_resp;
-        Error error = client.get_ocsp_response(m_certs[subject_idx], m_certs[issuer_idx], ocsp_verify_intermediates, m_trust_store, ocsp_resp);
-        if (error != Error::Ok) {
-            return error;
+        if (!skipped[subject_idx]) {
+            NvOcspResponse ocsp_resp{};
+            Error error = client.get_ocsp_response(m_certs[subject_idx], m_certs[issuer_idx], ocsp_verify_intermediates, m_trust_store, ocsp_resp);
+            if (error != Error::Ok) {
+                return error;
+            }
+            out.emplace_back(static_cast<size_t>(subject_idx), ocsp_resp);
         }
-
-        out.emplace_back(static_cast<size_t>(subject_idx), ocsp_resp);
 
         if (sk_X509_insert(ocsp_verify_intermediates.get(), m_certs[subject_idx].get(), 0) <= 0) {
             LOG_ERROR("Failed to prepend certificate to intermediate stack for OCSP: " << get_openssl_error());
@@ -632,7 +637,14 @@ Error X509CertChain::generate_ocsp_claims(const OcspVerifyOptions& ocsp_verify_o
     return Error::Ok;
 }
 
-bool all_certs_trusted(const std::vector<PerCertStatus>& chain) {
+void X509CertChain::set_verification_time(time_t when) {
+    if (when != 0 && m_trust_store) {
+        X509_VERIFY_PARAM_set_time(X509_STORE_get0_param(m_trust_store.get()), when);
+    }
+}
+
+bool all_certs_trusted(const std::vector<PerCertStatus>& chain,
+                       bool require_ocsp_nonce, bool enforce_ocsp_next_update) {
     // No ocsp data or NOT_CHECKED means not applicable. A genuinely failed
     // query must be marked ERROR by the caller, not left null.
     for (size_t i = 0; i < chain.size(); ++i) {
@@ -644,7 +656,9 @@ bool all_certs_trusted(const std::vector<PerCertStatus>& chain) {
             continue;
         }
         if (cert.ocsp->crl_status != OCSPStatus::GOOD ||
-            !cert.ocsp->nonce_matches || !cert.ocsp->response_valid) {
+            (require_ocsp_nonce && !cert.ocsp->nonce_matches) ||
+            (enforce_ocsp_next_update && cert.ocsp->response_expired) ||
+            !cert.ocsp->response_valid) {
             return false;
         }
     }
@@ -697,7 +711,8 @@ Error X509CertChain::generate_per_cert_status(const OcspVerifyOptions& ocsp_opti
         return Error::InternalError;
     }
 
-    time_t now = time(nullptr);
+    time_t now = ocsp_options.verification_time != 0
+        ? ocsp_options.verification_time : time(nullptr);
     out_statuses.resize(m_certs.size());
 
     for (size_t i = 0; i < m_certs.size(); ++i) {

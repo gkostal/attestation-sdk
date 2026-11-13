@@ -18,6 +18,7 @@
 #include "nv_attestation/corim_evidence/corim_store.h"
 
 #include <cstddef>
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <utility>
@@ -125,6 +126,11 @@ void CorimStore::set_cache(std::shared_ptr<INvCache> cache) {
     m_cache = std::move(cache);
 }
 
+void CorimStore::set_collateral_callback(CollateralCallback callback) {
+    m_collateral = std::move(callback);
+    m_cache.reset();
+}
+
 Error CorimStore::add_url_rewrite(std::string pattern,
                                     std::string replacement) {
     if (pattern.empty()) {
@@ -209,6 +215,39 @@ Error CorimStore::fetch_impl(const std::string &url,
     }
     if (resolve_err != Error::Ok) {
         return resolve_err;
+    }
+
+    // Callback routing precedes the shared cache and every native I/O path.
+    // Authorization is against the raw URL, never a caller's rewrite target.
+    if (m_collateral) {
+        if (url.find('\0') != std::string::npos) {
+            return Error::BadArgument;
+        }
+        std::string key = url;
+        const std::string canonical = std::string(kDefaultAllowedRawUrlPrefix) + "v1/rim/";
+        if (starts_with(url, canonical)) {
+            key = url.substr(canonical.size());
+            if (key.empty() || key.find_first_of("/\\%?#") != std::string::npos ||
+                key.find("..") != std::string::npos ||
+                key.find('\0') != std::string::npos) {
+                return Error::BadArgument;
+            }
+        }
+        std::vector<uint8_t> bytes;
+        Error err = m_collateral(CollateralKind::Corim, key, bytes);
+        if (err != Error::Ok) {
+            return err;
+        }
+        auto first = std::find_if(bytes.begin(), bytes.end(), [](uint8_t c) {
+            return c != ' ' && c != '\t' && c != '\r' && c != '\n';
+        });
+        if (first != bytes.end() && *first == '{') {
+            return extract_rim_service_bytes_with_coev(
+                url, std::string(bytes.begin(), bytes.end()), out_corim_bytes,
+                out_coev_bytes, out_coev_present, out_coev_sha256);
+        }
+        out_corim_bytes = std::move(bytes);
+        return Error::Ok;
     }
 
     if (m_cache) {

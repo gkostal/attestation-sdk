@@ -116,6 +116,8 @@ inline nvat_rc_t nvat_rc_from_cpp(Error cpp_rc) {
 
 // === NVAT String ===
 NVAT_PTR_CONVERSION_FUNCTIONS(str, std::string);
+NVAT_PTR_CONVERSION_FUNCTIONS(byte_buf, std::vector<uint8_t>);
+NVAT_PTR_CONVERSION_FUNCTIONS(verify_call_options, VerifyCallOptions);
 
 // === Core SDK ===
 NVAT_PTR_CONVERSION_FUNCTIONS(sdk_opts, std::shared_ptr<SdkOptions>);

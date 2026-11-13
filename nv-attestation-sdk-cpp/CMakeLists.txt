@@ -558,6 +558,19 @@ set_target_properties(nvat PROPERTIES
   SOVERSION "${NV_ATTESTATION_SOVERSION}"
 )
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND BUILD_SHARED_LIBS)
+  set_target_properties(nvat PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    C_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/nvat.lds"
+  )
+  target_link_options(nvat PRIVATE
+    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/nvat.lds"
+    "-Wl,--exclude-libs,ALL"
+  )
+endif()
+
 target_include_directories(nvat
   PUBLIC
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
@@ -593,12 +606,6 @@ endif()
 if (BUILD_EXAMPLES)
   message("-- Building with examples")
   add_subdirectory(examples)
-endif()
-
-if (BUILD_TESTING)
-  message("-- Building with tests")
-  enable_testing()
-  add_subdirectory(unit-tests)
 endif()
 
 if (BUILD_FUZZ_TESTS)
@@ -637,6 +644,30 @@ target_link_libraries(nvat
 
 # Ensure dependencies are built before nvat
 add_dependencies(nvat regorus_ffi spdlog fmt curl_external xmlsec_external openssl_external zcbor_lib)
+
+if (BUILD_TESTING)
+  # C++ internals are intentionally absent from the shared C ABI. Existing
+  # white-box tests link a private static copy; C ABI tests exercise libnvat.so.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND BUILD_SHARED_LIBS)
+    get_target_property(_nvat_sources nvat SOURCES)
+    add_library(nvat_test_internal STATIC ${_nvat_sources})
+    target_include_directories(nvat_test_internal PUBLIC
+      "${CMAKE_CURRENT_BINARY_DIR}/include")
+    foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS)
+      get_target_property(_value nvat ${_property})
+      if(_value)
+        set_property(TARGET nvat_test_internal PROPERTY ${_property} "${_value}")
+      endif()
+    endforeach()
+    get_target_property(_nvat_libs nvat LINK_LIBRARIES)
+    target_link_libraries(nvat_test_internal PUBLIC ${_nvat_libs})
+    # zcbor's C logging hook points back into this otherwise single-pass archive.
+    target_link_options(nvat_test_internal INTERFACE "-Wl,--undefined=nvat_zcbor_log")
+    add_dependencies(nvat_test_internal regorus_ffi spdlog fmt curl_external xmlsec_external openssl_external zcbor_lib)
+  endif()
+  enable_testing()
+  add_subdirectory(unit-tests)
+endif()
 
 # todo (p0): remove cmake configuration helpers
 install(TARGETS nvat

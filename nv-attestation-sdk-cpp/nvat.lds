@@ -1,0 +1,6 @@
+{
+    global:
+        nvat_*;
+    local:
+        *;
+};
