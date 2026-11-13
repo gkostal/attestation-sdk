@@ -29,12 +29,54 @@ nvat_verify_call_options_free(&options);
 nvat_local_corim_verifier_free(&verifier);
 ```
 
-Check every return code in production. Initialize the SDK once, before concurrent
-verification. Do not disable RIM signatures or freshness in a production verifier.
-Serialized lazy initialization on a request thread (e.g. `std::call_once`) is
-supported; the public ABI tests initialize on a worker thread. Options and logger
-handles retain shared ownership and may be kept until after `nvat_sdk_shutdown`,
-then freed. Callback user data must remain alive while its logger is reachable.
+Check every return code in production. Do not disable RIM signatures or freshness
+in a production verifier.
+
+## Initialization and lifetime
+
+Complete one successful, serialized `nvat_sdk_init` before verifier creation or
+verification. Options and logger handles may be prepared first. For the Linux
+artifact with bundled dependencies, initialization may run on the first request's
+worker thread: **the process main thread is not required**. A `std::call_once`
+guard is suitable when it blocks other SDK use until initialization succeeds.
+The public C ABI tests exercise this worker-thread initialization pattern.
+
+This contract follows the dependency guarantees, not merely the test outcome:
+
+* **libcurl 8.22.0:** this Linux build enables `HAVE_ATOMIC` and
+  `HAVE_STDATOMIC_H`, selecting thread-safe global initialization in
+  [`lib/easy_lock.h`](https://github.com/curl/curl/blob/curl-8_22_0/lib/easy_lock.h).
+  libcurl documents the
+  [`CURL_VERSION_THREADSAFE` global-init guarantee](https://curl.se/libcurl/c/curl_global_init.html).
+* **libxml2 2.15.4:** the
+  [`xmlInitParser` documentation in `threads.c`](https://github.com/GNOME/libxml2/blob/v2.15.4/threads.c)
+  explicitly removes the distinction between threads since 2.14.0; this build
+  uses the `pthread_once` initialization path.
+* **xmlsec 1.2.39:** [`xmlSecInit`](https://github.com/lsh123/xmlsec/blob/xmlsec-1_2_39/src/xmlsec.c)
+  requires its XML dependencies to be initialized first. The SDK initializes
+  libxml2 before xmlsec, and serializes xmlsec's global setup before any use.
+  This does **not** assert that concurrent xmlsec initialization is supported.
+* **OpenSSL 3.6.4:** modern
+  [OpenSSL initialization](https://docs.openssl.org/3.6/man3/OPENSSL_init_crypto/)
+  is automatic since 1.1.0; its
+  [thread-support rules](https://docs.openssl.org/3.6/man7/openssl-threads/)
+  do not impose process-main-thread initialization. The SDK's explicit setup is
+  still serialized before verification.
+
+Do not generalize this guarantee to arbitrary `USE_SYSTEM_DEPS` builds. Older
+libxml2 versions recommend main-thread initialization before multithreaded use.
+If libcurl lacks `CURL_VERSION_THREADSAFE`, its global initializer must run before
+**any other process threads**, not just before threads using the SDK. Such builds
+must meet those stricter requirements instead of using first-request lazy init.
+
+**No recovery on initialization failure:** after any non-OK result, do not retry
+initialization, construct a verifier, or continue SDK use. Partially initialized
+dependency state is undefined; a once-guard must not be used to retry a failure.
+
+Call `nvat_sdk_shutdown` only after all SDK operations have returned, and do not
+reinitialize afterward. Options and logger handles retain shared ownership and
+may be kept through shutdown, then freed (options first, logger second is safe).
+Callback user data must remain alive while its logger is reachable.
 
 ## Callback and ownership
 

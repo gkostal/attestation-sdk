@@ -25,9 +25,15 @@ struct SdkOptions {
 };
 
 
-// If this function is not called, using the SDK is undefined behavior.
-// Calling this function more than once is undefined behavior.
+// Initialize exactly once before verifier creation or verification. Options and
+// loggers may be prepared first. The bundled-dependency Linux build supports
+// serialized lazy initialization on a worker thread; no main-thread affinity is
+// required. Block other SDK use until initialization returns Error::Ok.
+// Alternate dependency builds must obey their global-init threading rules.
+// After failure, do not retry initialization or use the SDK: recovery from
+// partially initialized dependencies is undefined.
 Error init(const std::shared_ptr<SdkOptions>& options);
+// Call only after all SDK operations have returned; do not reinitialize afterward.
 void shutdown();
 
 }

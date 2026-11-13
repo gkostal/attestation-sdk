@@ -320,9 +320,16 @@ void nvat_sdk_opts_set_logger(nvat_sdk_opts_t opts, nvat_logger_t logger);
  * @brief Initialize the NVIDIA Attestation SDK with the given options.
  *
  * **Safety**: Callers should ensure the following:
- * - Initialize once, serialized before other SDK operations. A lazy initializer
- *   (for example std::call_once on the first request thread) is supported.
- * - Callers should not attempt to recover in case initialization fails.
+ * - Complete one successful, serialized initialization before verifier creation
+ *   or verification. Options and logger handles may be prepared beforehand.
+ * - The Linux build with bundled dependencies supports lazy initialization on a
+ *   request/worker thread (for example std::call_once); the process main thread
+ *   is not required. Keep other SDK use blocked until initialization succeeds.
+ * - Other dependency builds must satisfy their global-initialization threading
+ *   requirements. In particular, a libcurl build without CURL_VERSION_THREADSAFE
+ *   requires initialization before any other process threads are running.
+ * - If initialization fails, do not retry it or continue using the SDK.
+ *   Callers must not attempt recovery.
  *   Behavior of the SDK and the state of the underlying dependencies after a failure
  *   is currently not defined.
  */
@@ -334,8 +341,9 @@ nvat_rc_t nvat_sdk_init(nvat_sdk_opts_t opts);
  * This operation will shutdown any dependencies initialized as part
  * of @ref nvat_sdk_init and free any resources owned by the active
  * @ref nvat_sdk_opts_t.
- * All verification calls must have returned. Caller-owned options/logger
- * handles remain valid and may be freed after shutdown.
+ * All SDK operations must have returned. Do not resume SDK operations or
+ * reinitialize after shutdown. Caller-owned options/logger handles remain valid
+ * and may be freed after shutdown.
  */
 void nvat_sdk_shutdown(void);
 
