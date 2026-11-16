@@ -1,4 +1,8 @@
 cmake_minimum_required(VERSION 3.11)
+# MSVC: no default /W3 in CMAKE_<LANG>_FLAGS; the warning level is set below.
+if(POLICY CMP0092)
+  cmake_policy(SET CMP0092 NEW)
+endif()
 project(nv-attestation VERSION 2.0.0)
 
 set(CMAKE_CXX_STANDARD 14 CACHE STRING
@@ -42,6 +46,21 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+if(MSVC)
+  # Windows (MSVC). OpenSSL, curl, libxml2, xmlsec and zlib come from a package manager such as vcpkg
+  # (USE_SYSTEM_DEPS below); see dev/maa-prototype/BUILD-WINDOWS.md.
+  set(CMAKE_C_STANDARD 11)
+  add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX NOGDI _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+  add_compile_options(/utf-8 /bigobj "$<$<COMPILE_LANGUAGE:CXX>:/permissive-;/Zc:__cplusplus>")
+  # Hardening, as for other Windows binaries: Control Flow Guard, Spectre mitigations, CET shadow stacks.
+  add_compile_options(/guard:cf /Qspectre)
+  add_link_options(/guard:cf /CETCOMPAT)
+  set(NVAT_FORCE_INCLUDE_ZCBOR_COMPAT "/FI${CMAKE_CURRENT_SOURCE_DIR}/include/zcbor_msvc_compat.h")
+  set(NVAT_FORCE_INCLUDE_ZCBOR_LOGGER ${NVAT_FORCE_INCLUDE_ZCBOR_COMPAT} "/FI${CMAKE_CURRENT_SOURCE_DIR}/include/zcbor_logger.h")
+else()
+  set(NVAT_FORCE_INCLUDE_ZCBOR_LOGGER -include ${CMAKE_CURRENT_SOURCE_DIR}/include/zcbor_logger.h)
+endif()
 
 FetchContent_Declare(
     Corrosion
@@ -96,7 +115,7 @@ target_include_directories(own-jwt-cpp
     INTERFACE ${jwt-cpp_SOURCE_DIR}/include)
 # jwt-cpp is advertised as a c++11 library. but it somehow uses c++17 features,
 # but it should work with c++14 also. so disable this warning.
-target_compile_options(own-jwt-cpp INTERFACE -Wno-c++17-extensions)
+target_compile_options(own-jwt-cpp INTERFACE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-c++17-extensions>)
 
 FetchContent_Declare(json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG v3.12.0 GIT_SHALLOW TRUE EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(json)
@@ -128,7 +147,11 @@ target_compile_definitions(zcbor_lib PUBLIC ${ZCBOR_ABI_DEFINITIONS})
 # Override zcbor's logging to use our spdlog bridge
 target_compile_definitions(zcbor_lib PRIVATE ZCBOR_PRINT_FUNC=nvat_zcbor_log)
 
-target_compile_options(zcbor_lib PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/include/zcbor_logger.h)
+target_compile_options(zcbor_lib PRIVATE ${NVAT_FORCE_INCLUDE_ZCBOR_LOGGER})
+if(MSVC)
+  # 1U << n widened to size_t in zcbor_decode.c (n <= 3).
+  target_compile_options(zcbor_lib PRIVATE /wd4334)
+endif()
 
 # ZCBOR_VERBOSE only in Debug-without-sanitizer; trace macros do unchecked OOB reads.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND (NOT SANITIZER OR SANITIZER STREQUAL "OFF"))
@@ -223,9 +246,42 @@ foreach(cddl_file ${CDDL_FILES})
 endforeach()
 
 
-set_source_files_properties(${GENERATED_SOURCES} PROPERTIES
-    COMPILE_OPTIONS "-include;${CMAKE_CURRENT_SOURCE_DIR}/include/zcbor_logger.h;-Wno-type-limits"
-)
+if(MSVC)
+    # MSVC has no variable-length arrays: the generated decoders size their state arrays with a
+    # `const size_t num_flags`, which is not a constant expression in C. Compile copies in which
+    # num_flags is an enum constant.
+    if(REGENERATE_ZCBOR)
+        message(FATAL_ERROR "REGENERATE_ZCBOR is not supported with MSVC: regenerate on Linux")
+    endif()
+    set(_msvc_generated_sources)
+    foreach(gen_c ${GENERATED_SOURCES})
+        get_filename_component(gen_name ${gen_c} NAME)
+        set(msvc_c ${CMAKE_CURRENT_BINARY_DIR}/generated-msvc/${gen_name})
+        file(READ ${gen_c} gen_content)
+        string(REGEX REPLACE "const size_t num_flags = ([^;]+);" "enum { num_flags = \\1 };" gen_content "${gen_content}")
+        if(gen_content MATCHES "const size_t num_flags")
+            message(FATAL_ERROR "${gen_c}: could not rewrite num_flags for MSVC")
+        endif()
+        set(old_content "")
+        if(EXISTS ${msvc_c})
+            file(READ ${msvc_c} old_content)
+        endif()
+        if(NOT old_content STREQUAL gen_content)
+            file(WRITE ${msvc_c} "${gen_content}")
+        endif()
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${gen_c})
+        list(APPEND _msvc_generated_sources ${msvc_c})
+    endforeach()
+    set(GENERATED_SOURCES ${_msvc_generated_sources})
+
+    set_source_files_properties(${GENERATED_SOURCES} PROPERTIES
+        COMPILE_OPTIONS "${NVAT_FORCE_INCLUDE_ZCBOR_LOGGER}"
+    )
+else()
+    set_source_files_properties(${GENERATED_SOURCES} PROPERTIES
+        COMPILE_OPTIONS "${NVAT_FORCE_INCLUDE_ZCBOR_LOGGER};-Wno-type-limits"
+    )
+endif()
 
 if(NOT REGENERATE_ZCBOR)
     # Generated sources are committed; track CDDL files so CMake recompiles if
@@ -277,9 +333,47 @@ find_package(ZLIB REQUIRED)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/nvat_parallelism.cmake)
 nvat_resolve_build_jobs(NVAT_BUILD_JOBS)
 
-option(USE_SYSTEM_DEPS "Use system-installed OpenSSL, curl, and xmlsec instead of building from source" OFF)
+if(WIN32)
+  # The source builds of OpenSSL, libxml2, xmlsec and curl below are autotools based: on Windows the
+  # dependencies come from a package manager (vcpkg) instead.
+  set(_nvat_use_system_deps_default ON)
+else()
+  set(_nvat_use_system_deps_default OFF)
+endif()
+option(USE_SYSTEM_DEPS "Use system-installed OpenSSL, curl, and xmlsec instead of building from source" ${_nvat_use_system_deps_default})
+if(WIN32 AND NOT USE_SYSTEM_DEPS)
+  message(FATAL_ERROR "On Windows OpenSSL, curl, libxml2 and xmlsec must come from a package manager (USE_SYSTEM_DEPS=ON), "
+                      "e.g. vcpkg: see dev/maa-prototype/BUILD-WINDOWS.md")
+endif()
 
-if(USE_SYSTEM_DEPS)
+if(USE_SYSTEM_DEPS AND WIN32)
+  # vcpkg (or another CMake package provider): xmlsec is the unofficial-xmlsec package, whose targets
+  # carry the compile definitions (XMLSEC_STATIC, XMLSEC_CRYPTO_OPENSSL, XMLSEC_NO_*).
+  find_package(OpenSSL REQUIRED)
+  find_package(CURL REQUIRED)
+  find_package(LibXml2 REQUIRED)
+  find_package(unofficial-xmlsec CONFIG REQUIRED)
+
+  if(NOT TARGET xmlsec::xmlsec)
+    add_library(xmlsec::xmlsec INTERFACE IMPORTED)
+    set_target_properties(xmlsec::xmlsec PROPERTIES
+      INTERFACE_LINK_LIBRARIES "unofficial::xmlsec::xmlsec1;LibXml2::LibXml2"
+    )
+  endif()
+
+  if(NOT TARGET xmlsec::xmlsec-openssl)
+    add_library(xmlsec::xmlsec-openssl INTERFACE IMPORTED)
+    set_target_properties(xmlsec::xmlsec-openssl PROPERTIES
+      INTERFACE_LINK_LIBRARIES "unofficial::xmlsec::xmlsec1-openssl;xmlsec::xmlsec;OpenSSL::SSL;OpenSSL::Crypto"
+    )
+  endif()
+
+  # No-op targets for add_dependencies compatibility
+  add_custom_target(openssl_external)
+  add_custom_target(xmlsec_external)
+  add_custom_target(curl_external)
+
+elseif(USE_SYSTEM_DEPS)
   # Use system-installed packages (requires libssl-dev, libcurl4-openssl-dev, libxmlsec1-dev)
   find_package(OpenSSL REQUIRED)
   find_package(CURL REQUIRED)
@@ -478,17 +572,30 @@ else()
 
 endif() # USE_SYSTEM_DEPS
 
-add_compile_options(-Wall -Wextra -Wpedantic -pedantic)
-if (CMAKE_VERSION VERSION_LESS 3.24.0 AND CMAKE_COMPILE_WARNING_AS_ERROR)
-  add_compile_options(-Werror)
-endif()
-# TODO: Remove this and handle problems before GA.
-#       Unused params and variables natural during development.
-add_compile_options(-Wno-unused -Wno-unused-parameter)
+if(MSVC)
+  # /W4 is the counterpart of -Wall -Wextra -Wpedantic. Off: what the GCC/Clang flags below do not
+  # report either (-Wno-unused*; no -Wconversion or -Wshadow), constant conditions in templates/macros
+  # and the nameless structs of the zcbor generated types (-Wno-pedantic / -Wno-gnu-anonymous-struct).
+  add_compile_options(/W4
+    /wd4100 /wd4101 /wd4189 /wd4505   # unused parameters, locals and functions
+    /wd4244 /wd4267 /wd4245           # integer conversions
+    /wd4456 /wd4457 /wd4458 /wd4459   # shadowing
+    /wd4127                           # constant conditional expressions
+    /wd4201                           # nameless struct/union
+  )
+else()
+  add_compile_options(-Wall -Wextra -Wpedantic -pedantic)
+  if (CMAKE_VERSION VERSION_LESS 3.24.0 AND CMAKE_COMPILE_WARNING_AS_ERROR)
+    add_compile_options(-Werror)
+  endif()
+  # TODO: Remove this and handle problems before GA.
+  #       Unused params and variables natural during development.
+  add_compile_options(-Wno-unused -Wno-unused-parameter)
 
-# Add debug flags if Debug build or any sanitizer is used
-if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR (SANITIZER AND NOT SANITIZER STREQUAL "OFF"))
-  add_compile_options(-g3 -O0 -fno-omit-frame-pointer)
+  # Add debug flags if Debug build or any sanitizer is used
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR (SANITIZER AND NOT SANITIZER STREQUAL "OFF"))
+    add_compile_options(-g3 -O0 -fno-omit-frame-pointer)
+  endif()
 endif()
 
 # Make __FILE__ relative to source directory for cleaner log output.
@@ -556,7 +663,24 @@ set(NV_ATTESTATION_SOVERSION ${PROJECT_VERSION_MAJOR})
 set_target_properties(nvat PROPERTIES
   VERSION "${PROJECT_VERSION}"
   SOVERSION "${NV_ATTESTATION_SOVERSION}"
+  # nvat.h: NVAT_API exports the C ABI while the shared library itself is built.
+  DEFINE_SYMBOL NVAT_EXPORTS
 )
+if(NOT BUILD_SHARED_LIBS)
+  target_compile_definitions(nvat PUBLIC NVAT_STATIC)
+endif()
+
+if(WIN32 OR NOT USE_SYSTEM_DEPS)
+  set(_nvat_openssl_no_config_default ON)
+else()
+  set(_nvat_openssl_no_config_default OFF)
+endif()
+option(NVAT_OPENSSL_NO_CONFIG
+  "Never let OpenSSL load a configuration file (OPENSSL_CONF or its compiled-in OPENSSLDIR). On by default when OpenSSL is private to libnvat: built from source, or on Windows."
+  ${_nvat_openssl_no_config_default})
+if(NVAT_OPENSSL_NO_CONFIG)
+  target_compile_definitions(nvat PRIVATE NVAT_OPENSSL_NO_CONFIG)
+endif()
 
 # Export only the nvat_* C ABI from libnvat.so (Linux). The unit tests link internal
 # (non-nvat_*) symbols, so this is opt-in and incompatible with BUILD_TESTING; it is
@@ -604,6 +728,9 @@ target_include_directories(nvat
 
 # Apply zcbor logger override to generated decoder sources
 target_compile_definitions(nvat PRIVATE ZCBOR_PRINT_FUNC=nvat_zcbor_log ${ZCBOR_ABI_DEFINITIONS})
+if(MSVC)
+  target_compile_options(nvat PRIVATE ${NVAT_FORCE_INCLUDE_ZCBOR_COMPAT})
+endif()
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND (NOT SANITIZER OR SANITIZER STREQUAL "OFF"))
   target_compile_definitions(nvat PRIVATE ZCBOR_VERBOSE)
@@ -688,12 +815,16 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/include/nvat.h"
   COMPONENT Development
 )
 
+# The CMake package covers the shared library. A static libnvat (the Windows unit-test build) is not
+# installable as a package: its private dependencies (regorus, jwt-cpp, ...) are not exported.
+if(BUILD_SHARED_LIBS)
 install(EXPORT nvatTargets
   FILE nvatTargets.cmake
   NAMESPACE nvat::
   DESTINATION ${CMAKE_INSTALL_DATADIR}/cmake/nvat
   COMPONENT Development
 )
+endif()
 
 install(FILES
     cmake/FindLibXml2.cmake

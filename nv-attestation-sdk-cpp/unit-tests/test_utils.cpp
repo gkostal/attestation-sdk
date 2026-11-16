@@ -182,18 +182,9 @@ MockGpuEvidenceData MockGpuEvidenceData::create_rubin_scenario() {
 }
 
 Error get_git_repo_root(std::string& out_git_repo_root) {
-    std::string git_cmd = "git rev-parse --show-toplevel 2>/dev/null";
-    FILE* pipe = popen(git_cmd.c_str(), "r");
-    if (pipe) {
-        char buffer[1024];
-        if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-            std::string repo_root = std::string(buffer);
-            if (!repo_root.empty() && repo_root.back() == '\n') {
-                repo_root.pop_back();
-            }
-            out_git_repo_root = repo_root;
-            return Error::Ok;
-        }
-    }
-    return Error::InternalError;
+    // The repository root as the build saw it, rather than asking git: every test runs in its own
+    // process (ctest), and starting git for each of them is slow (on Windows especially), and the
+    // build tree may be outside the repository or in a copy without .git.
+    out_git_repo_root = NVAT_REPOSITORY_ROOT;
+    return out_git_repo_root.empty() ? Error::InternalError : Error::Ok;
 }

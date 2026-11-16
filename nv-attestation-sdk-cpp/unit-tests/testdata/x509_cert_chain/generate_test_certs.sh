@@ -197,8 +197,13 @@ authorityKeyIdentifier = keyid:always
 EOF
 
     openssl req -new -key "${LEAF_KEY}" -out "${EXPIRED_CSR}" -subj "/CN=TestLeafExpired" -config "${EXPIRED_CSR_CNF}"
-    openssl x509 -req -in "${EXPIRED_CSR}" -CA "${ROOT_CERT}" -CAkey "${ROOT_KEY}" -CAcreateserial \
-        -out "${LEAF_CERT_EXPIRED}" -days -1 -sha256 -extfile "${EXPIRED_SIGN_CNF}" -extensions v3_leaf
+    if ! openssl x509 -req -in "${EXPIRED_CSR}" -CA "${ROOT_CERT}" -CAkey "${ROOT_KEY}" -CAcreateserial \
+        -out "${LEAF_CERT_EXPIRED}" -days -1 -sha256 -extfile "${EXPIRED_SIGN_CNF}" -extensions v3_leaf 2>/dev/null; then
+        # OpenSSL 3.4+ rejects a negative -days ("end date before start date"); it has -not_before / -not_after.
+        openssl x509 -req -in "${EXPIRED_CSR}" -CA "${ROOT_CERT}" -CAkey "${ROOT_KEY}" -CAcreateserial \
+            -out "${LEAF_CERT_EXPIRED}" -not_before 20200101000000Z -not_after 20200102000000Z -sha256 \
+            -extfile "${EXPIRED_SIGN_CNF}" -extensions v3_leaf
+    fi
     
     # Clean up temporary files
     rm "${EXPIRED_CSR}" "${EXPIRED_CSR_CNF}" "${EXPIRED_SIGN_CNF}"

@@ -31,6 +31,7 @@
 #include <nlohmann/json.hpp>
 
 #include "local_https_test_server.h"
+#include "test_platform.h"
 #include "nv_attestation/corim_evidence/corim_store.h"
 #include "nv_attestation/error.h"
 #include "nv_attestation/nv_http.h"
@@ -45,13 +46,15 @@ constexpr const char *kNvidiaRimPrefix =
 class TempFile {
   public:
     explicit TempFile(const std::string &contents) {
-        char buf[] = "/tmp/nvat_corim_store_XXXXXX";
-        int fd = ::mkstemp(buf);
+        std::string path_template = nvat_test_temp_dir() + "/nvat_corim_store_XXXXXX";
+        std::vector<char> buf(path_template.begin(), path_template.end());
+        buf.push_back('\0');
+        int fd = ::mkstemp(buf.data());
         if (fd < 0) {
             throw std::system_error(errno, std::generic_category(), "mkstemp");
         }
         ::close(fd);
-        m_path = buf;
+        m_path = buf.data();
         std::ofstream out(m_path, std::ios::binary);
         out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
     }

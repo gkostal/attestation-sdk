@@ -37,6 +37,7 @@
 #include "nv_attestation/utils.h"
 #include "environment.h"
 #include "local_https_test_server.h"
+#include "test_platform.h"
 
 using nvattestation::map_submod_payloads_to_claims;
 using nvattestation::ClaimsCollection;
@@ -274,14 +275,14 @@ class VerifyAttestationResultServerTest : public ::testing::Test {
         jwks["keys"] = nlohmann::json::array();
         jwks["keys"].push_back({{"kty", "EC"}, {"crv", "P-384"}, {"kid", KID},
                                 {"x5c", nlohmann::json::array({der_b64})}});
-        const std::string jwks_path = tls_dir + "/test_jwks.json";
+        const std::string single_jwks_path = jwks_path("test_jwks");
         {
-            std::ofstream out(jwks_path);
+            std::ofstream out(single_jwks_path);
             out << jwks.dump();
         }
 
         // 3. Start the HTTPS server for the single-cert JWKS.
-        if (!m_server.start(jwks_path)) {
+        if (!m_server.start(single_jwks_path)) {
             std::cerr << "HTTPS server did not become ready" << std::endl;
             return;
         }
@@ -341,7 +342,7 @@ class VerifyAttestationResultServerTest : public ::testing::Test {
         }
 
         // valid-chain server: x5c = [chain_leaf, chain_ca] (chain_leaf IS signed by chain_ca)
-        const std::string valid_chain_jwks_path = tls_dir + "/test_jwks_valid_chain.json";
+        const std::string valid_chain_jwks_path = jwks_path("test_jwks_valid_chain");
         {
             nlohmann::json vcj;
             vcj["keys"] = nlohmann::json::array();
@@ -352,7 +353,7 @@ class VerifyAttestationResultServerTest : public ::testing::Test {
         }
 
         // mismatched server: x5c = [chain_leaf, single_leaf] (chain_leaf is NOT signed by single_leaf)
-        const std::string mismatched_jwks_path = tls_dir + "/test_jwks_mismatched.json";
+        const std::string mismatched_jwks_path = jwks_path("test_jwks_mismatched");
         {
             nlohmann::json mmj;
             mmj["keys"] = nlohmann::json::array();
@@ -421,7 +422,7 @@ class VerifyAttestationResultServerTest : public ::testing::Test {
             return;
         }
 
-        const std::string int_chain_jwks_path = tls_dir + "/test_jwks_int_chain.json";
+        const std::string int_chain_jwks_path = jwks_path("test_jwks_int_chain");
         {
             nlohmann::json icj;
             icj["keys"] = nlohmann::json::array();
@@ -463,6 +464,15 @@ class VerifyAttestationResultServerTest : public ::testing::Test {
         m_valid_chain_server.stop();
         m_mismatched_server.stop();
         m_int_server.stop();
+        for (const char* name : {"test_jwks", "test_jwks_valid_chain", "test_jwks_mismatched", "test_jwks_int_chain"}) {
+            std::remove(jwks_path(name).c_str());
+        }
+    }
+
+    // The JWKS files the servers serve, one set per test process: ctest runs the tests of this suite in
+    // parallel processes, and MalformedJwksPreservesJsonSerializationError rewrites its server's file.
+    static std::string jwks_path(const std::string& name) {
+        return "testdata/tls_test/" + name + "_" + std::to_string(nvat_test_process_id()) + ".json";
     }
 
     static nvat_http_options_t make_http_options() {
@@ -688,7 +698,7 @@ TEST_F(VerifyAttestationResultServerTest, TamperedSignatureRejected) {
 TEST_F(VerifyAttestationResultServerTest, MalformedJwksPreservesJsonSerializationError) {
     if (!m_setup_ok) GTEST_SKIP() << "JWKS test server not available";
 
-    const std::string jwks_path = "testdata/tls_test/test_jwks.json";
+    const std::string jwks_path = VerifyAttestationResultServerTest::jwks_path("test_jwks");
     std::string valid_jwks;
     ASSERT_EQ(nvattestation::readFileIntoString(jwks_path, valid_jwks), Error::Ok);
     {

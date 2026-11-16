@@ -52,6 +52,21 @@ Error handle_init_logger(const std::shared_ptr<SdkOptions>& options) {
     return Error::Ok;
 }
 
+Error handle_init_openssl() {
+#if defined(NVAT_OPENSSL_NO_CONFIG)
+    // This OpenSSL is private to the SDK (static, not the system's): it must not load an OpenSSL
+    // configuration file. Its compiled-in OPENSSLDIR is a build-machine path (on Windows possibly a
+    // directory an unprivileged user can create), and OPENSSL_CONF holds the host's configuration for
+    // the host's own OpenSSL. Running first, this also stops the later curl / xmlsec initialization
+    // from loading one.
+    if (OPENSSL_init_crypto(OPENSSL_INIT_NO_LOAD_CONFIG, nullptr) != 1) {
+        LOG_ERROR("Failed to initialize OpenSSL");
+        return Error::InternalError;
+    }
+#endif
+    return Error::Ok;
+}
+
 Error handle_init_curl() {
     // The first curl_easy_init() performs lazy global init, which is only
     // lock-guarded on libcurl >= 7.84 built with atomics. Doing it here
@@ -143,6 +158,11 @@ Error init(const std::shared_ptr<SdkOptions>& sdk_options) {
             g_sdkOptions = options;
         }
         Error err = handle_init_logger(g_sdkOptions);
+        if (err != Error::Ok) {
+            return err;
+        }
+
+        err = handle_init_openssl();
         if (err != Error::Ok) {
             return err;
         }

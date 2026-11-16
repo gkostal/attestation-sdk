@@ -11,15 +11,26 @@
  *
  * Scenarios: affirming | ocsp-missing | ocsp-revoked | corim-missing
  *
- * It also checks symbol hygiene in a process that has its own OpenSSL: libcrypto.so.3 is loaded
- * (RTLD_GLOBAL) after libnvat, and EVP_sha256 must resolve to libcrypto.so.3 -- not to libnvat --
- * and must not be visible through libnvat's own handle. Exit codes: 0 ok, 2 usage/IO error,
- * 3 symbol-hygiene failure, 4 verification call failed.
+ * It also checks symbol hygiene in a process that has its own OpenSSL.
+ *  - Linux: libcrypto.so.3 is loaded (RTLD_GLOBAL) after libnvat, and EVP_sha256 must resolve to
+ *    libcrypto.so.3 -- not to libnvat -- and must not be visible through libnvat's own handle.
+ *  - Windows: nothing but nvat_* may be exported by nvat.dll; with --host-openssl <libcrypto dll>
+ *    (e.g. MAA's OpenSSL 1.1.1) that OpenSSL is loaded and used before and after the verification,
+ *    in the same process as nvat.dll's private OpenSSL 3.
+ * Exit codes: 0 ok, 2 usage/IO error, 3 symbol-hygiene failure, 4 verification call failed.
  */
 
+#ifdef _WIN32
+#define _CRT_SECURE_NO_WARNINGS
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#define SMOKE_PATH_MAX 4096
+#else
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <limits.h>
+#define SMOKE_PATH_MAX PATH_MAX
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,7 +77,7 @@ static unsigned char* read_file(const char* path, size_t* out_len) {
 static nvat_rc_t collateral_callback(void* user_data, nvat_collateral_kind_t kind,
                                      const char* lookup_key, nvat_byte_buf_t* out) {
     struct context* ctx = (struct context*)user_data;
-    char path[PATH_MAX];
+    char path[SMOKE_PATH_MAX];
     ctx->requests++;
 
     if (kind == NVAT_COLLATERAL_KIND_CORIM) {
@@ -121,6 +132,71 @@ static bool should_log_callback(nvat_log_level_t level, const char* filename, co
     return level >= NVAT_LOG_LEVEL_ERROR;
 }
 
+#ifdef _WIN32
+/* Nothing but nvat_* may be exported (the DLL exports only what nvat.h declares). */
+static int check_symbol_hygiene(void) {
+    int failed = 0;
+    HMODULE nvat = GetModuleHandleA("nvat.dll");
+    if (nvat == NULL) {
+        fprintf(stderr, "[symbols] nvat.dll is not loaded?\n");
+        return 3;
+    }
+    const char* hidden[] = {"EVP_sha256", "OPENSSL_init_crypto", "curl_easy_init",
+                            "xmlParseMemory", "zcbor_new_decode_state", "zcbor_strnlen",
+                            "regorus_engine_new"};
+    for (size_t i = 0; i < sizeof(hidden) / sizeof(hidden[0]); ++i) {
+        if (GetProcAddress(nvat, hidden[i]) != NULL) {
+            fprintf(stderr, "[symbols] FAIL: nvat.dll exports %s\n", hidden[i]);
+            failed = 1;
+        }
+    }
+    if (GetProcAddress(nvat, "nvat_local_corim_verifier_verify_cmw_ex") == NULL) {
+        fprintf(stderr, "[symbols] FAIL: nvat_local_corim_verifier_verify_cmw_ex not exported\n");
+        failed = 1;
+    }
+    return failed ? 3 : 0;
+}
+
+/* The host's own OpenSSL (any 1.1.1 or 3.x libcrypto DLL), used through its exports only. */
+typedef const char* (*openssl_version_fn)(int);
+typedef const void* (*evp_sha256_fn)(void);
+typedef int (*evp_digest_fn)(const void*, size_t, unsigned char*, unsigned int*, const void*, void*);
+
+static HMODULE g_host_crypto = NULL;
+
+static int host_openssl_sha256(const char* when) {
+    if (g_host_crypto == NULL) {
+        return 0;
+    }
+    openssl_version_fn version = (openssl_version_fn)(void (*)(void))GetProcAddress(g_host_crypto, "OpenSSL_version");
+    evp_sha256_fn sha256 = (evp_sha256_fn)(void (*)(void))GetProcAddress(g_host_crypto, "EVP_sha256");
+    evp_digest_fn digest = (evp_digest_fn)(void (*)(void))GetProcAddress(g_host_crypto, "EVP_Digest");
+    if (version == NULL || sha256 == NULL || digest == NULL) {
+        fprintf(stderr, "[symbols] FAIL: the host OpenSSL lacks OpenSSL_version/EVP_sha256/EVP_Digest\n");
+        return 3;
+    }
+    /* SHA-256("abc") */
+    static const unsigned char expected[4] = {0xba, 0x78, 0x16, 0xbf};
+    unsigned char md[64];
+    unsigned int md_len = 0;
+    if (digest("abc", 3, md, &md_len, sha256(), NULL) != 1 || md_len != 32 ||
+        memcmp(md, expected, sizeof(expected)) != 0) {
+        fprintf(stderr, "[symbols] FAIL: the host OpenSSL (%s) computed a wrong SHA-256 %s\n", version(0), when);
+        return 3;
+    }
+    fprintf(stderr, "[symbols] host OpenSSL works %s: %s\n", when, version(0));
+    return 0;
+}
+
+static int load_host_openssl(const char* dll) {
+    g_host_crypto = LoadLibraryExA(dll, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (g_host_crypto == NULL) {
+        fprintf(stderr, "[symbols] FAIL: cannot load the host OpenSSL %s (error %lu)\n", dll, GetLastError());
+        return 3;
+    }
+    return host_openssl_sha256("before nvat_sdk_init");
+}
+#else
 static int check_symbol_hygiene(void) {
     int failed = 0;
 
@@ -163,24 +239,39 @@ static int check_symbol_hygiene(void) {
     }
     return failed ? 3 : 0;
 }
+#endif
 
 int main(int argc, char** argv) {
     if (argc < 5 || strcmp(argv[3], "--time") != 0) {
         fprintf(stderr, "usage: %s <bundle-dir> <affirming|ocsp-missing|ocsp-revoked|corim-missing> "
-                        "--time <epoch> [--enforce 0|1] [--require-nonce 0|1]\n", argv[0]);
+                        "--time <epoch> [--enforce 0|1] [--require-nonce 0|1] [--host-openssl <dll>]\n", argv[0]);
         return 2;
     }
     struct context ctx = {argv[1], argv[2], 0, 0};
     long long verification_time = atoll(argv[4]);
     int enforce = 1;
     int require_nonce = 0;
+    const char* host_openssl = NULL;
     for (int i = 5; i + 1 < argc; i += 2) {
         if (strcmp(argv[i], "--enforce") == 0) {
             enforce = atoi(argv[i + 1]);
         } else if (strcmp(argv[i], "--require-nonce") == 0) {
             require_nonce = atoi(argv[i + 1]);
+        } else if (strcmp(argv[i], "--host-openssl") == 0) {
+            host_openssl = argv[i + 1];
         }
     }
+
+#ifdef _WIN32
+    if (host_openssl != NULL && load_host_openssl(host_openssl) != 0) {
+        return 3;
+    }
+#else
+    if (host_openssl != NULL) {
+        fprintf(stderr, "--host-openssl is Windows only\n");
+        return 2;
+    }
+#endif
 
     /* libnvat's logger, routed to stderr (errors only). */
     nvat_logger_t logger = NULL;
@@ -196,7 +287,7 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    char cmw_path[PATH_MAX];
+    char cmw_path[SMOKE_PATH_MAX];
     snprintf(cmw_path, sizeof(cmw_path), "%s/fixtures/cmw/rubin_evidence.cmw.json", ctx.bundle);
     size_t cmw_len = 0;
     unsigned char* cmw = read_file(cmw_path, &cmw_len);
@@ -242,6 +333,11 @@ int main(int argc, char** argv) {
     fputc('\n', stdout);
 
     int hygiene = check_symbol_hygiene();
+#ifdef _WIN32
+    if (hygiene == 0) {
+        hygiene = host_openssl_sha256("after the verification");
+    }
+#endif
 
     nvat_str_free(&ear_json);
     nvat_verify_call_options_free(&options);

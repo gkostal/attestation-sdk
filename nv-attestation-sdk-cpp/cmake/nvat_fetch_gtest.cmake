@@ -6,6 +6,9 @@
 
 include(FetchContent)
 
+# MSVC: link the dynamic CRT (/MD) like nvat itself.
+set(gtest_force_shared_crt ON CACHE BOOL "Use the shared (DLL) CRT for googletest on MSVC" FORCE)
+
 FetchContent_Declare(
   googletest
   GIT_REPOSITORY https://github.com/google/googletest.git

@@ -19,7 +19,6 @@
 #include <cstring>
 #include <vector>
 #include <mutex>
-#include <dlfcn.h>
 
 #include "nv_attestation/log.h"
 #include "nv_attestation/error.h"

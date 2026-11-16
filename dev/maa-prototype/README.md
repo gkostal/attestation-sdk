@@ -1,7 +1,8 @@
 # NVAT for MAA: offline NVIDIA GPU (Rubin) appraisal through `libnvat`
 
-This directory holds everything needed to build and verify the **prebuilt Linux `libnvat.so.2` bundle**
-that MAA's EnclaveHost links against, plus the C ABI it relies on. MAA hands `libnvat` a CMW collection
+This directory holds everything needed to build and verify the **prebuilt `libnvat` bundle** that MAA's
+EnclaveHost links against: `libnvat.so.2` for the Linux EnclaveHost and `nvat.dll` for the Windows EnclaveHost
+(see [BUILD-WINDOWS.md](./BUILD-WINDOWS.md)), plus the C ABI they rely on. MAA hands `libnvat` a CMW collection
 (GPU evidence) and answers every collateral question - CoRIMs and OCSP responses - from its own store,
 so native code never touches the network or the filesystem.
 
@@ -74,8 +75,15 @@ is computed over the exact submitted bytes. The Blackwell FSP firmware-version h
 `-DNVAT_HIDE_INTERNAL_SYMBOLS=ON` (Linux, off by default; incompatible with `BUILD_TESTING`, whose tests link internal
 symbols) builds with hidden visibility and the linker version script `nv-attestation-sdk-cpp/nvat.lds`
 (`global: nvat_*; local: *;`) plus `--exclude-libs,ALL`, so the statically linked OpenSSL 3.6.4, curl, libxml2, xmlsec,
-spdlog, zcbor and regorus never interpose on the host's OpenSSL. `nvat.h` marks the public API
-`visibility("default")` for such builds.
+spdlog, zcbor and regorus never interpose on the host's OpenSSL. `nvat.h` marks every public function `NVAT_API`:
+default visibility on GCC/Clang, `dllexport` / `dllimport` on Windows (`NVAT_EXPORTS` while building the DLL), and
+nothing for static builds (`NVAT_STATIC`). On Windows the DLL exports exactly those functions.
+
+### OpenSSL configuration
+
+`NVAT_OPENSSL_NO_CONFIG` (on by default when OpenSSL is private to libnvat: built from source, or on Windows) makes
+`nvat_sdk_init` initialize OpenSSL with `OPENSSL_INIT_NO_LOAD_CONFIG`: libnvat's OpenSSL never reads `OPENSSL_CONF` (the
+host's configuration for its own OpenSSL) or its compiled-in `OPENSSLDIR` (a build-machine path).
 
 ## Building the bundle
 
@@ -103,6 +111,9 @@ else the host's pip config). The script:
 5. writes `manifest.json`.
 
 ### Bundle layout
+
+The Linux part (the Windows part, under `lib\win-x64\` and `win-x64\`, is described in [BUILD-WINDOWS.md](./BUILD-WINDOWS.md);
+both platforms share `include\nvat.h` and `fixtures\`):
 
 ```
 include/nvat.h                          generated header (from nvat.h.in)

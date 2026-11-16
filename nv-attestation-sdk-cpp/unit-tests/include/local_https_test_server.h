@@ -19,7 +19,9 @@
 
 #include <string>
 
+#ifndef _WIN32
 #include <sys/types.h>
+#endif
 
 // Spawns the shared testdata/tls_test/https_server.py as a child process
 // with a self-signed cert, for integration tests that need a real HTTPS
@@ -43,9 +45,11 @@ class LocalHttpsTestServer {
     const std::string &cert_dir() const { return m_cert_dir; }
 
   private:
-    static int find_free_port();
-
+#ifdef _WIN32
+    void *m_process = nullptr;  // HANDLE of the python server
+#else
     pid_t m_pid = -1;
+#endif
     int m_port = 0;
     std::string m_cert_dir = "testdata/tls_test";
 };

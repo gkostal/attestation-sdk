@@ -344,6 +344,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass  # suppress request logging
 
 
+class Server(http.server.HTTPServer):
+    # On Windows SO_REUSEADDR lets a second socket bind a port that is already in use, so test
+    # processes running in parallel could end up sharing a server: bind exclusively there.
+    allow_reuse_address = sys.platform != "win32"
+
+
 def main():
     port = int(sys.argv[1])
     certfile = sys.argv[2]
@@ -352,10 +358,10 @@ def main():
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(certfile, keyfile)
 
-    server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+    server = Server(("127.0.0.1", port), Handler)
     server.socket = ctx.wrap_socket(server.socket, server_side=True)
 
-    print(f"READY {port}", flush=True)
+    print(f"READY {server.server_address[1]}", flush=True)
     server.serve_forever()
 
 

@@ -20,7 +20,6 @@
 #include <vector>
 #include <memory>
 #include <mutex>
-#include <dlfcn.h>
 
 #include <openssl/x509.h>
 #include <openssl/pem.h>

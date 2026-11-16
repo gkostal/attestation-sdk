@@ -30,7 +30,7 @@
 #include <openssl/err.h>
 #include <openssl/rand.h>
 #include <errno.h>
-#include <dlfcn.h>
+#include "platform.h"
 #include "error.h"
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -63,7 +63,8 @@ inline bool ends_with(const std::string &str, const std::string &suffix) {
 }
 
 inline Error readFileIntoString(const std::string& path, std::string& out_content) {
-    std::ifstream ifs(path);
+    // Binary: on Windows, text mode would translate line endings and stop at a 0x1A byte.
+    std::ifstream ifs(path, std::ios::binary);
     if (!ifs) {
         LOG_ERROR("Could not open file: " << path);
         return Error::InternalError;
@@ -351,7 +352,7 @@ inline Error format_time(time_t timestamp, std::string& out_formatted_time) {
     }
 
     struct tm tm_info {};
-    struct tm* tm_result = gmtime_r(&timestamp, &tm_info);
+    struct tm* tm_result = gmtime_utc(&timestamp, &tm_info);
     if (tm_result == nullptr) {
         if (errno == EOVERFLOW) {
             LOG_ERROR("gmtime_r() failed: timestamp too large to represent: " << timestamp);

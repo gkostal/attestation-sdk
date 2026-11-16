@@ -5,9 +5,6 @@
 # Mirror the read-only source mount (/src-ro, the Windows working tree) into the
 # persistent work volume (/work/src) so builds never write into the host tree.
 # Build trees and the python venv inside /work/src are preserved across syncs.
-#
-# The unit-test environment calls `git rev-parse --show-toplevel`, so /work/src is
-# turned into a (history-less) git repository.
 
 set -euo pipefail
 
@@ -30,7 +27,4 @@ find "$WORK_SRC" \( -path '*/build*' -o -path '*/venv' -o -path '*/.git' \) -pru
        -o -name '*.json' -o -name '*.md' -o -name 'Makefile' -o -name '*.lds' \) \
     -print0 | xargs -0 -r grep -l $'\r' 2>/dev/null | tr '\n' '\0' | xargs -0 -r sed -i 's/\r$//' || true
 
-if [ ! -d "$WORK_SRC/.git" ]; then
-    git init -q "$WORK_SRC"
-fi
 echo "source synced to $WORK_SRC"

@@ -95,8 +95,9 @@ if (-not $PipIndexUrl) {
 Write-Host "NVAT $NvatBranch @ $NvatCommit (dirty: $NvatDirty)"
 Write-Host "bundle -> $OutDir"
 
-# Stale generated files go; the captured OCSP responses stay as the offline cache.
-foreach ($stale in 'include', 'lib', 'symbols', 'selftest', 'fixtures\corim', 'fixtures\cmw', 'ldd.txt',
+# Stale generated files go; the captured OCSP responses stay as the offline cache. The Windows library
+# (lib\win-x64\, win-x64\; build-bundle-windows.ps1) is left alone.
+foreach ($stale in 'include', 'lib\linux-x64', 'symbols', 'selftest', 'fixtures\corim', 'fixtures\cmw', 'ldd.txt',
                    'build-info.json', 'manifest.json', 'README.md') {
     Remove-Item -Recurse -Force (Join-Path $OutDir $stale) -ErrorAction SilentlyContinue
 }
@@ -184,7 +185,10 @@ Copy-Item (Join-Path $ScriptDir 'README.md') (Join-Path $OutDir 'README.md')
 Write-Step 'Write manifest.json'
 $buildInfo = Get-Content -Raw (Join-Path $OutDir 'build-info.json') | ConvertFrom-Json
 $nvatVersion = ((Select-String -Path (Join-Path $OutDir 'include\nvat.h') -Pattern 'NVAT_VERSION_STRING\s+"([^"]+)"').Matches[0].Groups[1].Value)
-$files = Get-ChildItem $OutDir -Recurse -File | Where-Object { $_.Name -ne 'manifest.json' } | Sort-Object FullName
+$files = Get-ChildItem $OutDir -Recurse -File | Where-Object {
+    $relative = $_.FullName.Substring($OutDir.Length + 1)
+    $_.Name -ne 'manifest.json' -and -not $relative.StartsWith('win-x64\') -and -not $relative.StartsWith('lib\win-x64\')
+} | Sort-Object FullName
 $entries = foreach ($file in $files) {
     [ordered]@{
         path   = $file.FullName.Substring($OutDir.Length + 1).Replace('\', '/')

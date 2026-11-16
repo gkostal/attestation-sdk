@@ -102,7 +102,14 @@ target_include_directories(nv-attestation-unit-tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-target_compile_options(nv-attestation-unit-tests PRIVATE -Wno-unused)
+if(MSVC)
+    # POSIX shims for the tests (test_platform.h) and zcbor's MSVC compatibility (internal headers include zcbor).
+    target_compile_options(nv-attestation-unit-tests PRIVATE
+        "/FI${CMAKE_CURRENT_SOURCE_DIR}/include/test_platform.h"
+        ${NVAT_FORCE_INCLUDE_ZCBOR_COMPAT})
+else()
+    target_compile_options(nv-attestation-unit-tests PRIVATE -Wno-unused)
+endif()
 target_compile_definitions(nv-attestation-unit-tests PRIVATE
     NVAT_REPOSITORY_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../.."
 )
@@ -232,6 +239,15 @@ file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/testdata
 # test binary runs. Always runs; the underlying script is idempotent. Also
 # re-syncs the .diag source-of-truth so post-configure edits aren't masked by
 # the configure-time file(COPY) above.
+if(WIN32)
+    # scripts/prepare-test-data.ps1: the same fixtures with cbor-diag, a python venv in the build tree and Git Bash.
+    set(_prepare_test_data_command
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/prepare-test-data.ps1
+        -TestData ${CMAKE_CURRENT_BINARY_DIR}/testdata -VenvDir ${CMAKE_BINARY_DIR}/test-venv)
+else()
+    set(_prepare_test_data_command
+        bash ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/prepare-test-data.sh ${CMAKE_CURRENT_BINARY_DIR}/testdata)
+endif()
 add_custom_target(prepare-test-data-for-unit-tests ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_CURRENT_SOURCE_DIR}/testdata/sample_rims
@@ -239,8 +255,7 @@ add_custom_target(prepare-test-data-for-unit-tests ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_CURRENT_SOURCE_DIR}/testdata/sample_attestation_data
         ${CMAKE_CURRENT_BINARY_DIR}/testdata/sample_attestation_data
-    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/prepare-test-data.sh
-        ${CMAKE_CURRENT_BINARY_DIR}/testdata
+    COMMAND ${_prepare_test_data_command}
     COMMENT "Preparing unit-test fixtures"
     VERBATIM
 )

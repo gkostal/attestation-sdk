@@ -23,7 +23,27 @@
 #include "spdlog/sinks/stdout_color_sinks.h"
 #include "nv_attestation/log.h"
 
+#ifdef _WIN32
+#include <iostream>
+#include "spdlog/sinks/ostream_sink.h"
+#endif
+
 namespace nvattestation {
+
+namespace {
+// The default console logger. On Windows it writes through the C runtime's stderr, as it does on Linux:
+// spdlog's Windows console sinks keep the console handle they found when they were created, so they would
+// bypass a later in-process redirection of stderr (such as a test capturing the log).
+std::shared_ptr<spdlog::logger> create_stderr_logger(const std::string& name) {
+#ifdef _WIN32
+    auto logger = std::make_shared<spdlog::logger>(name, std::make_shared<spdlog::sinks::ostream_sink_mt>(std::cerr, true));
+    spdlog::register_logger(logger);
+    return logger;
+#else
+    return spdlog::stderr_color_mt(name);
+#endif
+}
+} // namespace
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables): Must be mutable
 static std::shared_ptr<ILogger> g_logger;
@@ -46,13 +66,13 @@ std::shared_ptr<ILogger> get_logger() {
 }
 
 SpdLogLogger::SpdLogLogger(LogLevel level) {
-    m_logger = spdlog::stderr_color_mt("nvat");
+    m_logger = create_stderr_logger("nvat");
     m_logger->set_level(get_spdlog_level(level));
     m_logger->set_pattern(DEFAULT_SPDLOG_PATTERN);
 }
 
 SpdLogLogger::SpdLogLogger(std::string& name, LogLevel level) {
-    m_logger = spdlog::stderr_color_mt(name);
+    m_logger = create_stderr_logger(name);
     m_logger->set_level(get_spdlog_level(level));
     m_logger->set_pattern(DEFAULT_SPDLOG_PATTERN);
 }

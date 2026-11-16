@@ -13,7 +13,9 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 #include "gtest/gtest.h"
 #include <jwt-cpp/jwt.h>
@@ -22,6 +24,7 @@
 #include <openssl/pem.h>
 
 #include "local_https_test_server.h"
+#include "test_platform.h"
 #include "nv_attestation/claims.h"
 #include "nv_attestation/ear_mapper.h"
 #include "nv_attestation/nv_x509.h"
@@ -176,8 +179,10 @@ class VerifyEarServerTest : public ::testing::Test {
         const std::string x509_dir = "testdata/x509_cert_chain";
         m_ca_cert_path = tls_dir + "/tls_ca_cert.pem";
 
-        char temp_dir_template[] = "/tmp/nvat_verify_ear_XXXXXX";
-        const char* created_temp_dir = ::mkdtemp(temp_dir_template);
+        std::string temp_dir_template = nvat_test_temp_dir() + "/nvat_verify_ear_XXXXXX";
+        std::vector<char> temp_dir_buf(temp_dir_template.begin(), temp_dir_template.end());
+        temp_dir_buf.push_back('\0');
+        const char* created_temp_dir = ::mkdtemp(temp_dir_buf.data());
         if (created_temp_dir == nullptr) {
             return;
         }

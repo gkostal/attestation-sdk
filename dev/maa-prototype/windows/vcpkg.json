@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "nvat-maa-windows",
+  "version-string": "2.0.0",
+  "description": "Third-party libraries of libnvat (nv-attestation-sdk-cpp) for the MAA Windows build (nvat.dll). Built static with the dynamic CRT (triplet x64-windows-static-md-nvat) and linked into nvat.dll.",
+  "builtin-baseline": "4df3365fcbb4795a44795883f8719bbb3b3bcd77",
+  "dependencies": [
+    "openssl",
+    {
+      "name": "curl",
+      "default-features": false,
+      "features": [ "openssl" ]
+    },
+    {
+      "name": "libxml2",
+      "default-features": false,
+      "features": [ "zlib" ]
+    },
+    "xmlsec",
+    "zlib"
+  ]
+}

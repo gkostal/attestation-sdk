@@ -467,21 +467,20 @@ Error NvHttpOcspClient::get_ocsp_status(
             LOG_ERROR("Unable to convert producedAt ASN1_TIME to tm: " << get_openssl_error());
             return Error::InternalError;
         }
-        out_ocsp_response.producedat = timegm(&produced_at_tm);
+        out_ocsp_response.producedat = timegm_utc(&produced_at_tm);
         if (out_ocsp_response.producedat == static_cast<time_t>(-1)) {
             LOG_ERROR("timegm failed converting producedAt");
             return Error::InternalError;
         }
         LOG_DEBUG("ASN1_TIME_to_tm successful for produced at time: " << out_ocsp_response.producedat);
 
-        // note: timegm only works on linux.
         struct tm this_update_tm{};
         if (ASN1_TIME_to_tm((const ASN1_TIME *)thisupd, &this_update_tm) != 1) {
             LOG_ERROR("Unable to convert thisUpdate ASN1_TIME to tm: " << get_openssl_error());
             return Error::InternalError;
         }
 
-        time_t this_update_time = timegm(&this_update_tm);
+        time_t this_update_time = timegm_utc(&this_update_tm);
         if (this_update_time == static_cast<time_t>(-1)) {
             LOG_ERROR("timegm failed converting thisUpdate");
             return Error::InternalError;
@@ -501,7 +500,7 @@ Error NvHttpOcspClient::get_ocsp_status(
                 return Error::InternalError;
             }
 
-            time_t next_update_time = timegm(&next_update_tm);
+            time_t next_update_time = timegm_utc(&next_update_tm);
             if (next_update_time == static_cast<time_t>(-1)) {
                 LOG_ERROR("timegm failed converting nextUpdate");
                 return Error::InternalError;
@@ -516,7 +515,7 @@ Error NvHttpOcspClient::get_ocsp_status(
                 LOG_ERROR("Unable to convert revocationTime ASN1_TIME to tm: " << get_openssl_error());
                 return Error::InternalError;
             }
-            out_ocsp_response.revtime = timegm(&rev_time_tm);
+            out_ocsp_response.revtime = timegm_utc(&rev_time_tm);
             if (out_ocsp_response.revtime == static_cast<time_t>(-1)) {
                 LOG_ERROR("timegm failed converting revocationTime");
                 return Error::InternalError;

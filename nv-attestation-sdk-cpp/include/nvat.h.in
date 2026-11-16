@@ -28,10 +28,27 @@ extern "C" {
 #include <stdio.h>
 #include <time.h>
 
-// Keep every declaration below exported even when libnvat is built with
-// -fvisibility=hidden (NVAT_HIDE_INTERNAL_SYMBOLS); a no-op for consumers.
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC visibility push(default)
+/*
+ * NVAT_API marks the public C ABI: every function declared in this header.
+ *  - Windows (nvat.dll): __declspec(dllexport) while nvat itself is built (the build defines
+ *    NVAT_EXPORTS), __declspec(dllimport) for consumers.
+ *  - GCC / Clang: default visibility, so the C ABI stays exported when the library is built with
+ *    -fvisibility=hidden (NVAT_HIDE_INTERNAL_SYMBOLS).
+ *  - Static libraries and their consumers define NVAT_STATIC (set by the build's nvat target):
+ *    no decoration.
+ */
+#if defined(NVAT_STATIC)
+#define NVAT_API
+#elif defined(_WIN32)
+#if defined(NVAT_EXPORTS)
+#define NVAT_API __declspec(dllexport)
+#else
+#define NVAT_API __declspec(dllimport)
+#endif
+#elif defined(__GNUC__) || defined(__clang__)
+#define NVAT_API __attribute__((visibility("default")))
+#else
+#define NVAT_API
 #endif
 
 // === Package Version ===
@@ -78,7 +95,7 @@ typedef uint16_t nvat_rc_t;
 /**
  * @brief Convert the given return code into a human-readable error message.
  */
-const char* nvat_rc_to_string(nvat_rc_t rc);
+NVAT_API const char* nvat_rc_to_string(nvat_rc_t rc);
 
 /// @brief Indicates success (no error).
 #define NVAT_RC_OK                             (0)
@@ -238,7 +255,7 @@ typedef struct nvat_str_st* nvat_str_t;
 /**
  * @brief Get the length of the given string.
  */
-nvat_rc_t nvat_str_length(const nvat_str_t str, size_t* out_length);
+NVAT_API nvat_rc_t nvat_str_length(const nvat_str_t str, size_t* out_length);
 
 /**
  * @brief Get the data of the given string.
@@ -249,12 +266,12 @@ nvat_rc_t nvat_str_length(const nvat_str_t str, size_t* out_length);
  * **Ownership**: The ownership of the data is not transferred to the caller.
  * The caller should not free the data.
  */
-nvat_rc_t nvat_str_get_data(const nvat_str_t str, char** out_data);
+NVAT_API nvat_rc_t nvat_str_get_data(const nvat_str_t str, char** out_data);
 
 /**
  * @brief Free the given string.
  */
-void nvat_str_free(nvat_str_t* str);
+NVAT_API void nvat_str_free(nvat_str_t* str);
 
 /** @} nvat_string */
 
@@ -305,16 +322,16 @@ typedef enum {
  * @brief Allocate a new @ref nvat_sdk_opts_t on the heap.
  *
  */
-nvat_rc_t nvat_sdk_opts_create(nvat_sdk_opts_t* out_opts);
+NVAT_API nvat_rc_t nvat_sdk_opts_create(nvat_sdk_opts_t* out_opts);
 
-void nvat_sdk_opts_free(nvat_sdk_opts_t* sdk_opts);
+NVAT_API void nvat_sdk_opts_free(nvat_sdk_opts_t* sdk_opts);
 
 /**
  * @brief Sets the logger in the given options.
  *        Note that the logger is not installed until @ref nvat_sdk_init
  *        is called.
  */
-void nvat_sdk_opts_set_logger(nvat_sdk_opts_t opts, nvat_logger_t logger);
+NVAT_API void nvat_sdk_opts_set_logger(nvat_sdk_opts_t opts, nvat_logger_t logger);
 
 /**
  * @brief Initialize the NVIDIA Attestation SDK with the given options.
@@ -325,7 +342,7 @@ void nvat_sdk_opts_set_logger(nvat_sdk_opts_t opts, nvat_logger_t logger);
  *   Behavior of the SDK and the state of the underlying dependencies after a failure
  *   is currently not defined.
  */
-nvat_rc_t nvat_sdk_init(nvat_sdk_opts_t opts);
+NVAT_API nvat_rc_t nvat_sdk_init(nvat_sdk_opts_t opts);
 
 /**
  * @brief Shutdown the NVIDIA Attestation SDK.
@@ -334,14 +351,14 @@ nvat_rc_t nvat_sdk_init(nvat_sdk_opts_t opts);
  * of @ref nvat_sdk_init and free any resources owned by the active
  * @ref nvat_sdk_opts_t.
  */
-void nvat_sdk_shutdown(void);
+NVAT_API void nvat_sdk_shutdown(void);
 
 /**
  * @brief Create a new SPDLog Logger backend with the given name and
  *        log level.
  *        Logger will write to stdout.
  */
-nvat_rc_t nvat_logger_spdlog_create(
+NVAT_API nvat_rc_t nvat_logger_spdlog_create(
     nvat_logger_t* out_logger,
     const char* name,
     nvat_log_level_t level
@@ -408,7 +425,7 @@ typedef void (*nvat_log_callback_t)(
  * @param flush_callback Nullable callback to signal a request to flush buffered messages. If NULL, the callback is not invoked.
  * @param user_data Nullable pointer to user-defined data
  */
-nvat_rc_t nvat_logger_callback_create(
+NVAT_API nvat_rc_t nvat_logger_callback_create(
     nvat_logger_t* out_logger,
     nvat_log_callback_t log_callback,
     nvat_should_log_callback_t should_log_callback,
@@ -416,7 +433,7 @@ nvat_rc_t nvat_logger_callback_create(
     void* user_data
 );
 
-void nvat_logger_free(nvat_logger_t* logger);
+NVAT_API void nvat_logger_free(nvat_logger_t* logger);
 
 #define NVAT_HTTP_DEFAULT_RETRY_COUNT               (5)
 #define NVAT_HTTP_DEFAULT_BASE_BACKOFF_MS         (100) // 100 ms
@@ -425,33 +442,33 @@ void nvat_logger_free(nvat_logger_t* logger);
 #define NVAT_HTTP_DEFAULT_REQUEST_TIMEOUT_MS    (30000) // 30 seconds
 
 /** @brief Create a new set of HTTP options with default values. */
-nvat_rc_t nvat_http_options_create_default(nvat_http_options_t* http_options);
+NVAT_API nvat_rc_t nvat_http_options_create_default(nvat_http_options_t* http_options);
 /** @brief Sets the maximum number of retries on a failed HTTP request. At most `max(max_retries, 0) + 1` attempts will be made. */
-void nvat_http_options_set_max_retry_count(nvat_http_options_t http_options, long max_retries);
+NVAT_API void nvat_http_options_set_max_retry_count(nvat_http_options_t http_options, long max_retries);
 /** @brief Sets the base backoff time, in milliseconds. A base backoff of 0 disables backoff between retries (not recommended). */
-void nvat_http_options_set_base_backoff_ms(nvat_http_options_t http_options, long base_backoff_ms);
+NVAT_API void nvat_http_options_set_base_backoff_ms(nvat_http_options_t http_options, long base_backoff_ms);
 /** @brief Sets the maximum backoff time, in milliseconds. */
-void nvat_http_options_set_max_backoff_ms(nvat_http_options_t http_options, long max_backoff_ms);
+NVAT_API void nvat_http_options_set_max_backoff_ms(nvat_http_options_t http_options, long max_backoff_ms);
 /** @brief Sets the connection timeout for each HTTP request. */
-void nvat_http_options_set_connection_timeout_ms(nvat_http_options_t http_options, long connection_timeout_ms);
+NVAT_API void nvat_http_options_set_connection_timeout_ms(nvat_http_options_t http_options, long connection_timeout_ms);
 /** @brief Sets the overall request timeout of an HTTP request. */
-void nvat_http_options_set_request_timeout_ms(nvat_http_options_t http_options, long request_timeout_ms);
+NVAT_API void nvat_http_options_set_request_timeout_ms(nvat_http_options_t http_options, long request_timeout_ms);
 /** @brief Sets the path to a TLS CA certificate bundle file (PEM). If not set, the system default is used. */
-void nvat_http_options_set_tls_ca_cert(nvat_http_options_t http_options, const char* tls_ca_cert);
+NVAT_API void nvat_http_options_set_tls_ca_cert(nvat_http_options_t http_options, const char* tls_ca_cert);
 /** @brief Sets the path to a directory of TLS CA certificates. If not set, the system default is used. */
-void nvat_http_options_set_tls_ca_path(nvat_http_options_t http_options, const char* tls_ca_path);
-void nvat_http_options_free(nvat_http_options_t* http_options);
+NVAT_API void nvat_http_options_set_tls_ca_path(nvat_http_options_t http_options, const char* tls_ca_path);
+NVAT_API void nvat_http_options_free(nvat_http_options_t* http_options);
 
 /**
  * @brief Create JWT validation settings with a 60-second clock-skew leeway.
  */
-nvat_rc_t nvat_jwt_validation_options_create_default(
+NVAT_API nvat_rc_t nvat_jwt_validation_options_create_default(
     nvat_jwt_validation_options_t* out_options);
 /** @brief Set the clock-skew leeway used for JWT time claims. */
-void nvat_jwt_validation_options_set_clock_skew_leeway_seconds(
+NVAT_API void nvat_jwt_validation_options_set_clock_skew_leeway_seconds(
     nvat_jwt_validation_options_t options, uint64_t seconds);
 /** @brief Free JWT validation settings. */
-void nvat_jwt_validation_options_free(
+NVAT_API void nvat_jwt_validation_options_free(
     nvat_jwt_validation_options_t* options);
 
 /** @} options */
@@ -483,7 +500,7 @@ typedef enum {
  * @param name Algorithm name to parse. Must not be NULL.
  * @param out_algorithm Receives the parsed algorithm. Must not be NULL.
  */
-nvat_rc_t nvat_ocsp_cert_id_hash_algorithm_from_name(
+NVAT_API nvat_rc_t nvat_ocsp_cert_id_hash_algorithm_from_name(
     const char* name,
     nvat_ocsp_cert_id_hash_algorithm_t* out_algorithm
 );
@@ -497,7 +514,7 @@ typedef struct nvat_ocsp_client_options_st* nvat_ocsp_client_options_t;
  * @param out_options On success, receives an options handle. Free with
  *        @ref nvat_ocsp_client_options_free.
  */
-nvat_rc_t nvat_ocsp_client_options_create_default(
+NVAT_API nvat_rc_t nvat_ocsp_client_options_create_default(
     nvat_ocsp_client_options_t* out_options
 );
 
@@ -507,12 +524,12 @@ nvat_rc_t nvat_ocsp_client_options_create_default(
  * @param options Options handle to update.
  * @param algorithm CertID hash algorithm.
  */
-nvat_rc_t nvat_ocsp_client_options_set_cert_id_hash_algorithm(
+NVAT_API nvat_rc_t nvat_ocsp_client_options_set_cert_id_hash_algorithm(
     nvat_ocsp_client_options_t options,
     nvat_ocsp_cert_id_hash_algorithm_t algorithm
 );
 
-void nvat_ocsp_client_options_free(nvat_ocsp_client_options_t* options);
+NVAT_API void nvat_ocsp_client_options_free(nvat_ocsp_client_options_t* options);
 
 /**
  * @brief Create an OCSP client with default settings.
@@ -526,7 +543,7 @@ void nvat_ocsp_client_options_free(nvat_ocsp_client_options_t* options);
  *
  * URL can also be set using the NVAT_OCSP_BASE_URL environment variable.
  */
-nvat_rc_t nvat_ocsp_client_create_default(
+NVAT_API nvat_rc_t nvat_ocsp_client_create_default(
     nvat_ocsp_client_t* out_client,
     const char* base_url,
     const char* service_key,
@@ -547,7 +564,7 @@ nvat_rc_t nvat_ocsp_client_create_default(
  * @param http_options HTTP options. NULL uses defaults.
  * @param options Construction options to copy. NULL uses fixed SHA-256.
  */
-nvat_rc_t nvat_ocsp_client_create_default_with_options(
+NVAT_API nvat_rc_t nvat_ocsp_client_create_default_with_options(
     nvat_ocsp_client_t* out_client,
     const char* base_url,
     const char* service_key,
@@ -565,7 +582,7 @@ nvat_rc_t nvat_ocsp_client_create_default_with_options(
  * @param ttl_seconds The time-to-live for cached items in seconds. The ocsp
  * response will be cached for min(ttl_seconds, ocsp response next update time)
  */
-nvat_rc_t nvat_ocsp_client_create_cached(
+NVAT_API nvat_rc_t nvat_ocsp_client_create_cached(
     nvat_ocsp_client_t* out_client,
     const nvat_ocsp_client_t inner_client,
     uint64_t max_size_bytes,
@@ -598,7 +615,7 @@ nvat_rc_t nvat_ocsp_client_create_cached(
  * @param num_rewrites Number of entries in the rewrite arrays.
  * @param options Construction options to copy. NULL uses fixed SHA-256.
  */
-nvat_rc_t nvat_ocsp_client_create_aia(
+NVAT_API nvat_rc_t nvat_ocsp_client_create_aia(
     nvat_ocsp_client_t* out_client,
     const char* base_url,
     const char* service_key,
@@ -609,7 +626,7 @@ nvat_rc_t nvat_ocsp_client_create_aia(
     const nvat_ocsp_client_options_t options
 );
 
-void nvat_ocsp_client_free(nvat_ocsp_client_t* ocsp_client);
+NVAT_API void nvat_ocsp_client_free(nvat_ocsp_client_t* ocsp_client);
 
 /** @} ocsp_client */
 
@@ -639,7 +656,7 @@ typedef struct nvat_rim_store_st* nvat_rim_store_t;
  * URL can also be set using the NVAT_RIM_SERVICE_BASE_URL environment variable.
  *
  */
-nvat_rc_t nvat_rim_store_create_remote(
+NVAT_API nvat_rc_t nvat_rim_store_create_remote(
     nvat_rim_store_t* out_store,
     const char* base_url,
     const char* service_key,
@@ -662,7 +679,7 @@ nvat_rc_t nvat_rim_store_create_remote(
  *                The client is refcounted and safe to share between multiple
  *                verifier components.
  */
-nvat_rc_t nvat_rim_store_create_filesystem(nvat_rim_store_t* out_store, const char* base_path);
+NVAT_API nvat_rc_t nvat_rim_store_create_filesystem(nvat_rim_store_t* out_store, const char* base_path);
 
 /**
  * @brief Create a RIM store with in-memory caching that wraps an existing RIM store.
@@ -682,9 +699,9 @@ nvat_rc_t nvat_rim_store_create_filesystem(nvat_rim_store_t* out_store, const ch
  * @return @ref NVAT_RC_OK on success, error code on failure.
  */
 
-nvat_rc_t nvat_rim_store_create_cached(nvat_rim_store_t* out_store, const nvat_rim_store_t inner_store, uint64_t max_size_bytes, time_t ttl_seconds);
+NVAT_API nvat_rc_t nvat_rim_store_create_cached(nvat_rim_store_t* out_store, const nvat_rim_store_t inner_store, uint64_t max_size_bytes, time_t ttl_seconds);
 
-void nvat_rim_store_free(nvat_rim_store_t* rim_store);
+NVAT_API void nvat_rim_store_free(nvat_rim_store_t* rim_store);
 
 /** @} rim_store */
 
@@ -704,12 +721,12 @@ typedef struct nvat_nonce_st* nvat_nonce_t;
  * System must have access to a trusted entropy source.
  * @see <a href="https://docs.openssl.org/3.3/man3/RAND_bytes/">OpenSSL RAND_bytes</a>.
  */
-nvat_rc_t nvat_nonce_create(nvat_nonce_t* out_nonce, size_t length);
+NVAT_API nvat_rc_t nvat_nonce_create(nvat_nonce_t* out_nonce, size_t length);
 
 /**
  * @brief Get the number of bytes in the given nonce.
  */
-size_t nvat_nonce_get_length(const nvat_nonce_t nonce);
+NVAT_API size_t nvat_nonce_get_length(const nvat_nonce_t nonce);
 
 /**
  * @brief Encode the given nonce as a C-string.
@@ -718,7 +735,7 @@ size_t nvat_nonce_get_length(const nvat_nonce_t nonce);
  * @param out_str *out_str will point to a heap allocated `nvat_str_t`. See @ref nvat_str_t.
  *
  */
-nvat_rc_t nvat_nonce_to_hex_string(const nvat_nonce_t nonce, nvat_str_t* out_str);
+NVAT_API nvat_rc_t nvat_nonce_to_hex_string(const nvat_nonce_t nonce, nvat_str_t* out_str);
 
 /**
  * @brief Create a nonce from a hex-encoded string.
@@ -729,7 +746,7 @@ nvat_rc_t nvat_nonce_to_hex_string(const nvat_nonce_t nonce, nvat_str_t* out_str
  * @param out_nonce On success, set to a newly allocated nonce. Caller owns it; free with nvat_nonce_free().
  * @param hex_string The hex-encoded string representation of the nonce.
  */
-nvat_rc_t nvat_nonce_from_hex(nvat_nonce_t* out_nonce, const char* hex_string);
+NVAT_API nvat_rc_t nvat_nonce_from_hex(nvat_nonce_t* out_nonce, const char* hex_string);
 
 /**
  * @brief Create a nonce from raw bytes.
@@ -739,7 +756,7 @@ nvat_rc_t nvat_nonce_from_hex(nvat_nonce_t* out_nonce, const char* hex_string);
  * @param length The number of bytes in input_bytes. Must be at least 32 bytes.
  * @return NVAT_RC_OK on success, NVAT_RC_BAD_ARGUMENT if parameters are invalid or length is too short.
  */
-nvat_rc_t nvat_nonce_from_bytes(nvat_nonce_t* out_nonce, const char* input_bytes, size_t length);
+NVAT_API nvat_rc_t nvat_nonce_from_bytes(nvat_nonce_t* out_nonce, const char* input_bytes, size_t length);
 
 /**
  * @brief Get a copy of the raw bytes from a nonce.
@@ -754,9 +771,9 @@ nvat_rc_t nvat_nonce_from_bytes(nvat_nonce_t* out_nonce, const char* input_bytes
  * @param bytes_len The size of the bytes buffer. Must match the nonce length exactly.
  * @return NVAT_RC_OK on success, NVAT_RC_BAD_ARGUMENT if parameters are invalid or bytes_len doesn't match nonce length.
  */
-nvat_rc_t nvat_nonce_get_bytes(const nvat_nonce_t nonce, char* bytes, size_t bytes_len);
+NVAT_API nvat_rc_t nvat_nonce_get_bytes(const nvat_nonce_t nonce, char* bytes, size_t bytes_len);
 
-void nvat_nonce_free(nvat_nonce_t* nonce);
+NVAT_API void nvat_nonce_free(nvat_nonce_t* nonce);
 
 /**
  * @defgroup gpu_evidence GPU Evidence
@@ -786,7 +803,7 @@ typedef struct nvat_gpu_evidence_source_st* nvat_gpu_evidence_source_t;
  * @brief Create a @ref nvat_gpu_evidence_source_t that will collect evidence from all GPUs accessible on
  *        the system via NVML.
  */
-nvat_rc_t nvat_gpu_evidence_source_nvml_create(nvat_gpu_evidence_source_t* out_source);
+NVAT_API nvat_rc_t nvat_gpu_evidence_source_nvml_create(nvat_gpu_evidence_source_t* out_source);
 
 /**
  * @brief Create a @ref nvat_gpu_evidence_source that will collect evidence from all GPUs
@@ -797,7 +814,7 @@ nvat_rc_t nvat_gpu_evidence_source_nvml_create(nvat_gpu_evidence_source_t* out_s
  * @return NVAT_RC_OK on success, error code otherwise
  *
  */
-nvat_rc_t nvat_gpu_evidence_source_corelib_create(nvat_gpu_evidence_source_t* out_source, const char* gpu_architecture);
+NVAT_API nvat_rc_t nvat_gpu_evidence_source_corelib_create(nvat_gpu_evidence_source_t* out_source, const char* gpu_architecture);
 
 /**
  * @brief Create a @ref nvat_gpu_evidence_source from a JSON string with the following schema:
@@ -835,7 +852,7 @@ nvat_rc_t nvat_gpu_evidence_source_corelib_create(nvat_gpu_evidence_source_t* ou
  * @param out_source A pointer to the evidence source that will return the evidence from the file.
  * @param json_string JSON formatted GPU evidence
  */
-nvat_rc_t nvat_gpu_evidence_source_from_json_string(nvat_gpu_evidence_source_t* out_source, const char* json_string);
+NVAT_API nvat_rc_t nvat_gpu_evidence_source_from_json_string(nvat_gpu_evidence_source_t* out_source, const char* json_string);
 
 /**
  * @brief Create a @ref nvat_gpu_evidence_source_t that will read existing evidence from the given
@@ -845,9 +862,9 @@ nvat_rc_t nvat_gpu_evidence_source_from_json_string(nvat_gpu_evidence_source_t* 
  * @param file_path The path to the file to deserialize the evidence from.
  */
 
-nvat_rc_t nvat_gpu_evidence_source_from_json_file(nvat_gpu_evidence_source_t* out_source, const char* file_path);
+NVAT_API nvat_rc_t nvat_gpu_evidence_source_from_json_file(nvat_gpu_evidence_source_t* out_source, const char* file_path);
 
-void      nvat_gpu_evidence_source_free(nvat_gpu_evidence_source_t* gpu_evidence_source);
+NVAT_API void      nvat_gpu_evidence_source_free(nvat_gpu_evidence_source_t* gpu_evidence_source);
 
 /** @} gpu_evidence_source */
 
@@ -864,14 +881,14 @@ void      nvat_gpu_evidence_source_free(nvat_gpu_evidence_source_t* gpu_evidence
  *
  * The `nonce` must not be `NULL`. .
  */
-nvat_rc_t nvat_gpu_evidence_collect(
+NVAT_API nvat_rc_t nvat_gpu_evidence_collect(
     const nvat_gpu_evidence_source_t source,
     const nvat_nonce_t nonce,
     nvat_gpu_evidence_t** out_gpu_evidence_array,
     size_t* out_num_evidences
 );
 
-void nvat_gpu_evidence_array_free(nvat_gpu_evidence_t** gpu_evidence_array, size_t num_evidences);
+NVAT_API void nvat_gpu_evidence_array_free(nvat_gpu_evidence_t** gpu_evidence_array, size_t num_evidences);
 
 /** @} gpu_evidence_collection */
 
@@ -891,7 +908,7 @@ void nvat_gpu_evidence_array_free(nvat_gpu_evidence_t** gpu_evidence_array, size
  * The caller assumes ownership of the `out_serialized_evidence`
  * See @ref nvat_string
  */
-nvat_rc_t nvat_gpu_evidence_serialize_json(
+NVAT_API nvat_rc_t nvat_gpu_evidence_serialize_json(
     const nvat_gpu_evidence_t* gpu_evidence_array,
     size_t num_evidences,
     nvat_str_t* out_serialized_evidence
@@ -929,7 +946,7 @@ typedef struct nvat_switch_evidence_source_st* nvat_switch_evidence_source_t;
  * @brief Create a @ref nvat_switch_evidence_source_t that will collect evidence from all NVSwitches
  * accessible from the system via NSCQ.
  */
-nvat_rc_t nvat_switch_evidence_source_nscq_create(nvat_switch_evidence_source_t* out_source);
+NVAT_API nvat_rc_t nvat_switch_evidence_source_nscq_create(nvat_switch_evidence_source_t* out_source);
 
 /**
  * @brief Create a @ref nvat_switch_evidence_source_t that will read existing evidence from the given
@@ -968,7 +985,7 @@ nvat_rc_t nvat_switch_evidence_source_nscq_create(nvat_switch_evidence_source_t*
  * @param out_source A pointer to the evidence source that will return the evidence from the JSON string.
  * @param json_string JSON formatted GPU evidence
  */
-nvat_rc_t nvat_switch_evidence_source_from_json_string(nvat_switch_evidence_source_t* out_source, const char* json_string);
+NVAT_API nvat_rc_t nvat_switch_evidence_source_from_json_string(nvat_switch_evidence_source_t* out_source, const char* json_string);
 
 /**
  * @brief Create a @ref nvat_switch_evidence_source_t that will read existing evidence from the given
@@ -978,9 +995,9 @@ nvat_rc_t nvat_switch_evidence_source_from_json_string(nvat_switch_evidence_sour
  * @param file_path The path to the file to deserialize the evidence from.
  */
 
-nvat_rc_t nvat_switch_evidence_source_from_json_file(nvat_switch_evidence_source_t* out_source, const char* file_path);
+NVAT_API nvat_rc_t nvat_switch_evidence_source_from_json_file(nvat_switch_evidence_source_t* out_source, const char* file_path);
 
-void      nvat_switch_evidence_source_free(nvat_switch_evidence_source_t* switch_evidence_source);
+NVAT_API void      nvat_switch_evidence_source_free(nvat_switch_evidence_source_t* switch_evidence_source);
 
 /** @} switch_evidence_source */
 
@@ -997,7 +1014,7 @@ void      nvat_switch_evidence_source_free(nvat_switch_evidence_source_t* switch
  *
  * The `nonce` must not be `NULL`.
  */
-nvat_rc_t nvat_switch_evidence_collect(const nvat_switch_evidence_source_t source, const nvat_nonce_t nonce, nvat_switch_evidence_t** out_switch_evidence_array, size_t* out_num_evidences);
+NVAT_API nvat_rc_t nvat_switch_evidence_collect(const nvat_switch_evidence_source_t source, const nvat_nonce_t nonce, nvat_switch_evidence_t** out_switch_evidence_array, size_t* out_num_evidences);
 
 /** @} switch_evidence_collection */
 
@@ -1015,13 +1032,13 @@ nvat_rc_t nvat_switch_evidence_collect(const nvat_switch_evidence_source_t sourc
  * On failure, caller must not make assumptions about the contents of
  * `buffer`.
  */
-nvat_rc_t nvat_switch_evidence_serialize_json(
+NVAT_API nvat_rc_t nvat_switch_evidence_serialize_json(
     const nvat_switch_evidence_t* switch_evidence_array,
     size_t num_evidences,
     nvat_str_t* out_serialized_evidence
 );
 
-void nvat_switch_evidence_array_free(nvat_switch_evidence_t** switch_evidence_array, size_t num_evidences);
+NVAT_API void nvat_switch_evidence_array_free(nvat_switch_evidence_t** switch_evidence_array, size_t num_evidences);
 /** @} switch_evidence_serialize */
 
 /** @} switch_evidence */
@@ -1053,13 +1070,13 @@ typedef nvat_detached_eat_options_t nvat_ear_signing_options_t;
  */
 typedef struct nvat_claims_collection_st* nvat_claims_collection_t;
 
-nvat_rc_t nvat_claims_collection_extend(nvat_claims_collection_t nvat_claims_collection, const nvat_claims_collection_t other_claims_collection);
-void nvat_claims_collection_free(nvat_claims_collection_t* claims_collection);
+NVAT_API nvat_rc_t nvat_claims_collection_extend(nvat_claims_collection_t nvat_claims_collection, const nvat_claims_collection_t other_claims_collection);
+NVAT_API void nvat_claims_collection_free(nvat_claims_collection_t* claims_collection);
 
 /**
  * @brief Serialize the given claims collection to JSON.
  */
-nvat_rc_t nvat_claims_collection_serialize_json(const nvat_claims_collection_t claims, nvat_str_t* out_serialized_claims);
+NVAT_API nvat_rc_t nvat_claims_collection_serialize_json(const nvat_claims_collection_t claims, nvat_str_t* out_serialized_claims);
 
 
 /**
@@ -1071,9 +1088,9 @@ nvat_rc_t nvat_claims_collection_serialize_json(const nvat_claims_collection_t c
  * @param kid - The kid to use for the detached EAT. If NULL, the kid header claim will not be set.
  * @param out_detached_eat - out parameter, will point to detached EAT, which is a NULL terminated JSON string
  */
-nvat_rc_t nvat_detached_eat_options_create(nvat_detached_eat_options_t* out_options, const char* private_key_pem, const char* issuer, const char* kid);
+NVAT_API nvat_rc_t nvat_detached_eat_options_create(nvat_detached_eat_options_t* out_options, const char* private_key_pem, const char* issuer, const char* kid);
 
-void nvat_detached_eat_options_free(nvat_detached_eat_options_t* options);
+NVAT_API void nvat_detached_eat_options_free(nvat_detached_eat_options_t* options);
 
 /**
  * @param claims - The claims collection to get the detached EAT from.
@@ -1081,7 +1098,7 @@ void nvat_detached_eat_options_free(nvat_detached_eat_options_t* options);
  * See @ref nvat_detached_eat_options_st for more information.
  * @param out_detached_eat - out parameter, will point to detached EAT, which is a NULL terminated JSON string
  */
-nvat_rc_t nvat_get_detached_eat_es384(const nvat_claims_collection_t claims, const nvat_detached_eat_options_t options, nvat_str_t* out_detached_eat);
+NVAT_API nvat_rc_t nvat_get_detached_eat_es384(const nvat_claims_collection_t claims, const nvat_detached_eat_options_t options, nvat_str_t* out_detached_eat);
 
 /**
  * @defgroup evidence_policy Evidence Policy
@@ -1111,9 +1128,9 @@ typedef uint8_t nvat_switch_claims_version_t;
  * - OCSP status must be "good"
  * - OCSP nonce must match between the OCSP request and response
  */
-nvat_rc_t nvat_evidence_policy_create_default(nvat_evidence_policy_t* policy);
+NVAT_API nvat_rc_t nvat_evidence_policy_create_default(nvat_evidence_policy_t* policy);
 
-void nvat_evidence_policy_free(nvat_evidence_policy_t* evidence_policy);
+NVAT_API void nvat_evidence_policy_free(nvat_evidence_policy_t* evidence_policy);
 
 /**
  * @brief Whether to verify the signatures on RIM files.
@@ -1123,7 +1140,7 @@ void nvat_evidence_policy_free(nvat_evidence_policy_t* evidence_policy);
  * If not set, defaults to `true`.
  * **Do not use in production deployments.**
  */
-void nvat_evidence_policy_set_verify_rim_signature(nvat_evidence_policy_t policy, bool verify_rim_signature);
+NVAT_API void nvat_evidence_policy_set_verify_rim_signature(nvat_evidence_policy_t policy, bool verify_rim_signature);
 
 /**
  * @brief Whether to verify RIM file certificate chains.
@@ -1133,17 +1150,17 @@ void nvat_evidence_policy_set_verify_rim_signature(nvat_evidence_policy_t policy
  * If not set, defaults to `true`.
  * **Do not use in production deployments.**
  */
-void nvat_evidence_policy_set_verify_rim_cert_chain(nvat_evidence_policy_t policy, bool verify_rim_cert_chain);
+NVAT_API void nvat_evidence_policy_set_verify_rim_cert_chain(nvat_evidence_policy_t policy, bool verify_rim_cert_chain);
 
 /**
  * @brief Set the expected claims version for GPU attestation results.
  */
-nvat_rc_t nvat_evidence_policy_set_gpu_claims_version(nvat_evidence_policy_t policy, const nvat_gpu_claims_version_t version);
+NVAT_API nvat_rc_t nvat_evidence_policy_set_gpu_claims_version(nvat_evidence_policy_t policy, const nvat_gpu_claims_version_t version);
 
 /**
  * @brief Set the expected claims version for switch attestation results.
  */
-nvat_rc_t nvat_evidence_policy_set_switch_claims_version(nvat_evidence_policy_t policy, const nvat_switch_claims_version_t version);
+NVAT_API nvat_rc_t nvat_evidence_policy_set_switch_claims_version(nvat_evidence_policy_t policy, const nvat_switch_claims_version_t version);
 
 /** @} evidence_policy */
 
@@ -1172,7 +1189,7 @@ typedef struct nvat_gpu_local_verifier_st* nvat_gpu_local_verifier_t;
  *
  * URL can also be set using the NVAT_NRAS_BASE_URL environment variable.
  */
-nvat_rc_t nvat_gpu_nras_verifier_create(
+NVAT_API nvat_rc_t nvat_gpu_nras_verifier_create(
     nvat_gpu_nras_verifier_t* out_verifier,
     const char* base_url,
     const char* service_key,
@@ -1196,7 +1213,7 @@ nvat_rc_t nvat_gpu_nras_verifier_create(
  * as the verification process can be compromised by malicious actors
  * with elevated privileges on the host.
  */
-nvat_rc_t nvat_gpu_local_verifier_create(
+NVAT_API nvat_rc_t nvat_gpu_local_verifier_create(
     nvat_gpu_local_verifier_t* out_verifier,
     nvat_rim_store_t rim_store,
     nvat_ocsp_client_t ocsp_client,
@@ -1220,7 +1237,7 @@ nvat_rc_t nvat_gpu_local_verifier_create(
  *     This error can only be returned in out_detached_eat is not NULL (otherwise detached EAT is not generated)
  *   - Other error codes
  */
-nvat_rc_t nvat_verify_gpu_evidence(
+NVAT_API nvat_rc_t nvat_verify_gpu_evidence(
     const nvat_gpu_verifier_t verifier,
     const nvat_gpu_evidence_t* gpu_evidence_array,
     size_t num_evidences,
@@ -1229,9 +1246,9 @@ nvat_rc_t nvat_verify_gpu_evidence(
     nvat_claims_collection_t* out_claims
 );
 
-nvat_gpu_verifier_t nvat_gpu_local_verifier_upcast(nvat_gpu_local_verifier_t verifier);
-nvat_gpu_verifier_t nvat_gpu_nras_verifier_upcast(nvat_gpu_nras_verifier_t verifier);
-void nvat_gpu_verifier_free(nvat_gpu_verifier_t* gpu_verifier);
+NVAT_API nvat_gpu_verifier_t nvat_gpu_local_verifier_upcast(nvat_gpu_local_verifier_t verifier);
+NVAT_API nvat_gpu_verifier_t nvat_gpu_nras_verifier_upcast(nvat_gpu_nras_verifier_t verifier);
+NVAT_API void nvat_gpu_verifier_free(nvat_gpu_verifier_t* gpu_verifier);
 
 /** @} gpu_verifier */
 
@@ -1258,7 +1275,7 @@ typedef struct nvat_switch_local_verifier_st* nvat_switch_local_verifier_t;
  * @param base_url If `NULL`, will use the default NRAS production base URL
  * @param http_options If `NULL`, will use default HTTP options
  */
-nvat_rc_t nvat_switch_nras_verifier_create(
+NVAT_API nvat_rc_t nvat_switch_nras_verifier_create(
     nvat_switch_nras_verifier_t* out_verifier,
     const char* base_url,
     const char* service_key,
@@ -1281,7 +1298,7 @@ nvat_rc_t nvat_switch_nras_verifier_create(
  * as the verification process can be compromised by malicious actors
  * with elevated privileges on the host.
  */
-nvat_rc_t nvat_switch_local_verifier_create(
+NVAT_API nvat_rc_t nvat_switch_local_verifier_create(
     nvat_switch_local_verifier_t* out_verifier,
     nvat_rim_store_t rim_store,
     nvat_ocsp_client_t ocsp_client,
@@ -1305,7 +1322,7 @@ nvat_rc_t nvat_switch_local_verifier_create(
  *     This error can only be returned in out_detached_eat is not NULL (otherwise detached EAT is not generated)
  *   - Other error codes
  */
-nvat_rc_t nvat_verify_switch_evidence(
+NVAT_API nvat_rc_t nvat_verify_switch_evidence(
     const nvat_switch_verifier_t verifier,
     const nvat_switch_evidence_t* switch_evidence_array,
     size_t num_evidences,
@@ -1314,9 +1331,9 @@ nvat_rc_t nvat_verify_switch_evidence(
     nvat_claims_collection_t* out_claims
 );
 
-nvat_switch_verifier_t nvat_switch_local_verifier_upcast(nvat_switch_local_verifier_t verifier);
-nvat_switch_verifier_t nvat_switch_nras_verifier_upcast(nvat_switch_nras_verifier_t verifier);
-void nvat_switch_verifier_free(nvat_switch_verifier_t* switch_verifier);
+NVAT_API nvat_switch_verifier_t nvat_switch_local_verifier_upcast(nvat_switch_local_verifier_t verifier);
+NVAT_API nvat_switch_verifier_t nvat_switch_nras_verifier_upcast(nvat_switch_nras_verifier_t verifier);
+NVAT_API void nvat_switch_verifier_free(nvat_switch_verifier_t* switch_verifier);
 
 /** @} switch_verifier */
 
@@ -1340,7 +1357,7 @@ typedef struct nvat_relying_party_policy_st* nvat_relying_party_policy_t;
  * @brief Create a Rego relying party (RP) policy backed by [regorus](https://github.com/microsoft/regorus).
  * see @ref nvat_claims_collection_st for the format of the input to the policy
  */
-nvat_rc_t nvat_relying_party_policy_create_rego_from_str(nvat_relying_party_policy_t* rp_policy, const char* rego_str);
+NVAT_API nvat_rc_t nvat_relying_party_policy_create_rego_from_str(nvat_relying_party_policy_t* rp_policy, const char* rego_str);
 
 /**
  * @brief Evaluate the given claims collection against a relying party policy.
@@ -1350,7 +1367,7 @@ nvat_rc_t nvat_relying_party_policy_create_rego_from_str(nvat_relying_party_poli
  *
  * Returns NVAT_RC_OK if the claims match the policy, NVAT_RC_RELYING_PARTY_POLICY_MISMATCH if the claims do not match the policy.
  */
-nvat_rc_t nvat_apply_relying_party_policy(nvat_relying_party_policy_t policy, const nvat_claims_collection_t claims);
+NVAT_API nvat_rc_t nvat_apply_relying_party_policy(nvat_relying_party_policy_t policy, const nvat_claims_collection_t claims);
 
 /**
  * @brief Evaluate an Entity Attestation Result (EAR) JSON object against a
@@ -1371,12 +1388,12 @@ nvat_rc_t nvat_apply_relying_party_policy(nvat_relying_party_policy_t policy, co
  *     or the JSON root is not an object
  *   - @ref NVAT_RC_POLICY_EVALUATION_ERROR if policy evaluation fails
  */
-nvat_rc_t nvat_apply_relying_party_policy_to_ear(
+NVAT_API nvat_rc_t nvat_apply_relying_party_policy_to_ear(
     nvat_relying_party_policy_t policy,
     const char* ear_json
 );
 
-void nvat_relying_party_policy_free(nvat_relying_party_policy_t* relying_party_policy);
+NVAT_API void nvat_relying_party_policy_free(nvat_relying_party_policy_t* relying_party_policy);
 
 /** @} rp_policy */
 
@@ -1428,7 +1445,7 @@ void nvat_relying_party_policy_free(nvat_relying_party_policy_t* relying_party_p
  *         signature, issuer, or structure is invalid; NVAT_RC_BAD_ARGUMENT for
  *         NULL required arguments; other codes for HTTP/JWKS errors.
  */
-nvat_rc_t nvat_verify_attestation_result(
+NVAT_API nvat_rc_t nvat_verify_attestation_result(
     const char* eat,
     const char* nras_base_url,
     const char* service_key,
@@ -1464,7 +1481,7 @@ nvat_rc_t nvat_verify_attestation_result(
  *        a newly allocated authenticated EAR JSON string; free it with
  *        @ref nvat_str_free.
  */
-nvat_rc_t nvat_verify_ear(
+NVAT_API nvat_rc_t nvat_verify_ear(
     const char* ear_jwt,
     const char* verifier_base_url,
     const char* service_key,
@@ -1535,25 +1552,25 @@ typedef uint8_t nvat_verifier_type_t;
  *
  * Defaults to local evidence collection and verification.
  */
-nvat_rc_t nvat_attestation_ctx_create(nvat_attestation_ctx_t* ctx);
+NVAT_API nvat_rc_t nvat_attestation_ctx_create(nvat_attestation_ctx_t* ctx);
 
 /**
  * @brief Set the device type to attest on.
  * See @ref nvat_devices_t for valid values.
  */
-nvat_rc_t nvat_attestation_ctx_set_device_type(nvat_attestation_ctx_t ctx, nvat_devices_t device_type);
+NVAT_API nvat_rc_t nvat_attestation_ctx_set_device_type(nvat_attestation_ctx_t ctx, nvat_devices_t device_type);
 
 /**
  * @brief Sets the verifier type for all enabled devices in this context.
  */
-nvat_rc_t nvat_attestation_ctx_set_verifier_type(nvat_attestation_ctx_t ctx, nvat_verifier_type_t verifier_type);
+NVAT_API nvat_rc_t nvat_attestation_ctx_set_verifier_type(nvat_attestation_ctx_t ctx, nvat_verifier_type_t verifier_type);
 
 /**
  * @brief Set the default NRAS url to use when using NVIDIA Remote Attestation Service as the remote verifier.
  * Note that this setting does **not** change the NRAS url of any verifiers
  * previously set in the context.
  */
-nvat_rc_t nvat_attestation_ctx_set_default_nras_url(nvat_attestation_ctx_t ctx, const char * nras_url);
+NVAT_API nvat_rc_t nvat_attestation_ctx_set_default_nras_url(nvat_attestation_ctx_t ctx, const char * nras_url);
 
 /**
  * @brief Set the effective evidence policy for this context.
@@ -1561,27 +1578,27 @@ nvat_rc_t nvat_attestation_ctx_set_default_nras_url(nvat_attestation_ctx_t ctx, 
  *
  * **Ownership**: On success, ownership of the evidence policy is transferred to the attestation context.
  */
-nvat_rc_t nvat_attestation_ctx_set_evidence_policy(nvat_attestation_ctx_t ctx, nvat_evidence_policy_t* evidence_policy);
+NVAT_API nvat_rc_t nvat_attestation_ctx_set_evidence_policy(nvat_attestation_ctx_t ctx, nvat_evidence_policy_t* evidence_policy);
 
 /**
  * @brief Set the effective relying party policy for this context.
  * @param rp_policy if NULL, the existing policy is cleared and a default policy will be set.
  */
-nvat_rc_t nvat_attestation_ctx_set_relying_party_policy(nvat_attestation_ctx_t ctx, nvat_relying_party_policy_t rp_policy);
+NVAT_API nvat_rc_t nvat_attestation_ctx_set_relying_party_policy(nvat_attestation_ctx_t ctx, nvat_relying_party_policy_t rp_policy);
 
 /**
  * @brief Change the default OCSP url to use when initializing local verifiers.
  * Note that this setting does **not** change the OCSP client of any verifiers
  * previously set in the context.
  */
-nvat_rc_t nvat_attestation_ctx_set_default_ocsp_url(nvat_attestation_ctx_t ctx, const char * ocsp_url);
+NVAT_API nvat_rc_t nvat_attestation_ctx_set_default_ocsp_url(nvat_attestation_ctx_t ctx, const char * ocsp_url);
 
 /**
  * @brief Change the default OCSP client to use when initializing local verifiers.
  * Note that this setting does **not** change the OCSP client of any verifiers
  * previously set in the context.
  */
-nvat_rc_t nvat_attestation_ctx_set_default_ocsp_client(nvat_attestation_ctx_t ctx, nvat_ocsp_client_t ocsp_client);
+NVAT_API nvat_rc_t nvat_attestation_ctx_set_default_ocsp_client(nvat_attestation_ctx_t ctx, nvat_ocsp_client_t ocsp_client);
 
 
 /**
@@ -1589,7 +1606,7 @@ nvat_rc_t nvat_attestation_ctx_set_default_ocsp_client(nvat_attestation_ctx_t ct
  * Note that this setting does **not** change the RIM store of any verifiers
  * previously set in the context.
  */
-nvat_rc_t nvat_attestation_ctx_set_default_rim_store_url(nvat_attestation_ctx_t ctx, const char * rim_store_url);
+NVAT_API nvat_rc_t nvat_attestation_ctx_set_default_rim_store_url(nvat_attestation_ctx_t ctx, const char * rim_store_url);
 
 /**
  * @brief Change the default RIM store to use when initializing local verifiers.
@@ -1597,33 +1614,33 @@ nvat_rc_t nvat_attestation_ctx_set_default_rim_store_url(nvat_attestation_ctx_t 
  * Note that this setting does **not** change the RIM store of any verifiers
  * previously set in the context.
  */
-nvat_rc_t nvat_attestation_ctx_set_default_rim_store(nvat_attestation_ctx_t ctx, nvat_rim_store_t rim_store);
+NVAT_API nvat_rc_t nvat_attestation_ctx_set_default_rim_store(nvat_attestation_ctx_t ctx, nvat_rim_store_t rim_store);
 
 /**
  * @brief Set the GPU evidence source to use a JSON file. See @ref nvat_gpu_evidence_source_from_json_file() for
  * the expected format of the JSON file.
  */
-nvat_rc_t nvat_attestation_ctx_set_gpu_evidence_source_json_file(nvat_attestation_ctx_t ctx, const char* file_path);
+NVAT_API nvat_rc_t nvat_attestation_ctx_set_gpu_evidence_source_json_file(nvat_attestation_ctx_t ctx, const char* file_path);
 
 /**
  * @brief Set the NVSwitch evidence source to use a JSON file. See @ref nvat_switch_evidence_source_from_json_file() for
  * the expected format of the JSON file.
  */
-nvat_rc_t nvat_attestation_ctx_set_switch_evidence_source_json_file(nvat_attestation_ctx_t ctx, const char* file_path);
+NVAT_API nvat_rc_t nvat_attestation_ctx_set_switch_evidence_source_json_file(nvat_attestation_ctx_t ctx, const char* file_path);
 
 /**
  * @brief Set the service key to use when creating the remote verifiers, rim
  * store or the OCSP client.
  */
-nvat_rc_t nvat_attestation_ctx_set_service_key(nvat_attestation_ctx_t ctx, const char* service_key);
+NVAT_API nvat_rc_t nvat_attestation_ctx_set_service_key(nvat_attestation_ctx_t ctx, const char* service_key);
 /**
  * @brief Set the detached EAT options to use when generating the detached EAT.
  * If this function is not called, a default set of options will be used.
  * See @ref nvat_detached_eat_options_st for more information.
  */
-nvat_rc_t nvat_attestation_ctx_set_detached_eat_options(nvat_attestation_ctx_t ctx, nvat_detached_eat_options_t detached_eat_options);
+NVAT_API nvat_rc_t nvat_attestation_ctx_set_detached_eat_options(nvat_attestation_ctx_t ctx, nvat_detached_eat_options_t detached_eat_options);
 
-void nvat_attestation_ctx_free(nvat_attestation_ctx_t* attestation_ctx);
+NVAT_API void nvat_attestation_ctx_free(nvat_attestation_ctx_t* attestation_ctx);
 
 /**
  * @brief Run end-to-end attestation on the current system using settings
@@ -1670,7 +1687,7 @@ void nvat_attestation_ctx_free(nvat_attestation_ctx_t* attestation_ctx);
  * See here for claims schema: :ref:`Claims schema <claims-schema>`
  * \endverbatim
  */
-nvat_rc_t nvat_attest_device(
+NVAT_API nvat_rc_t nvat_attest_device(
     const nvat_attestation_ctx_t ctx,
     const nvat_nonce_t nonce,
     nvat_str_t* out_detached_eat,
@@ -1721,7 +1738,7 @@ typedef struct nvat_cmw_collection_st* nvat_cmw_collection_t;
  *
  * TODO(v2): generalize for NVSwitch / EAT / non-GPU evidence.
  */
-nvat_rc_t nvat_cmw_collection_create_from_gpu_evidence(
+NVAT_API nvat_rc_t nvat_cmw_collection_create_from_gpu_evidence(
     nvat_cmw_collection_t* out,
     const nvat_gpu_evidence_t* gpu_evidence_array,
     size_t num_evidences,
@@ -1747,7 +1764,7 @@ nvat_rc_t nvat_cmw_collection_create_from_gpu_evidence(
  * @param nonce Expected per-evidence nonce (checked against the SPDM transcript),
  *              or NULL to skip the freshness check.
  */
-nvat_rc_t nvat_cmw_collection_create_from_spdm_transcript(
+NVAT_API nvat_rc_t nvat_cmw_collection_create_from_spdm_transcript(
     nvat_cmw_collection_t* out,
     const char* label,
     const uint8_t* transcript,
@@ -1767,7 +1784,7 @@ nvat_rc_t nvat_cmw_collection_create_from_spdm_transcript(
  * @param out On success, set to the newly allocated collection. Free with
  *            @ref nvat_cmw_collection_free.
  */
-nvat_rc_t nvat_cmw_collection_create_from_eat(
+NVAT_API nvat_rc_t nvat_cmw_collection_create_from_eat(
     nvat_cmw_collection_t* out,
     const char* label,
     const uint8_t* signed_cwt,
@@ -1783,13 +1800,13 @@ nvat_rc_t nvat_cmw_collection_create_from_eat(
  * @param out_serialized On success, set to a newly allocated string. Free
  *                       with @ref nvat_str_free.
  */
-nvat_rc_t nvat_cmw_collection_serialize(
+NVAT_API nvat_rc_t nvat_cmw_collection_serialize(
     const nvat_cmw_collection_t cmw,
     nvat_cmw_format_t format,
     nvat_str_t* out_serialized
 );
 
-void nvat_cmw_collection_free(nvat_cmw_collection_t* cmw);
+NVAT_API void nvat_cmw_collection_free(nvat_cmw_collection_t* cmw);
 
 /** @} cmw */
 
@@ -1815,7 +1832,7 @@ typedef struct nvat_corim_store_st* nvat_corim_store_t;
  * @param service_key Service key for https RIM fetches. Pass NULL or "" for none.
  * @param http_options HTTP options. NULL uses defaults.
  */
-nvat_rc_t nvat_corim_store_create(
+NVAT_API nvat_rc_t nvat_corim_store_create(
     nvat_corim_store_t* out_store,
     const char* service_key,
     const nvat_http_options_t http_options
@@ -1830,7 +1847,7 @@ nvat_rc_t nvat_corim_store_create(
  * the allowed endpoint to file:// mirrors or staging hosts without weakening
  * the input gate.
  */
-nvat_rc_t nvat_corim_store_add_url_rewrite(
+NVAT_API nvat_rc_t nvat_corim_store_add_url_rewrite(
     nvat_corim_store_t store,
     const char* pattern,
     const char* replacement
@@ -1840,7 +1857,7 @@ nvat_rc_t nvat_corim_store_add_url_rewrite(
  * @brief Append an https:// prefix to the raw-URL allowlist checked before any
  *        rewrite.
  */
-nvat_rc_t nvat_corim_store_add_allowed_url_prefix(
+NVAT_API nvat_rc_t nvat_corim_store_add_allowed_url_prefix(
     nvat_corim_store_t store,
     const char* prefix
 );
@@ -1859,13 +1876,13 @@ nvat_rc_t nvat_corim_store_add_allowed_url_prefix(
  * @return @ref NVAT_RC_OK on success, @ref NVAT_RC_BAD_ARGUMENT if store is
  *         NULL, max_size_bytes is 0, or ttl_seconds is negative.
  */
-nvat_rc_t nvat_corim_store_enable_in_memory_cache(
+NVAT_API nvat_rc_t nvat_corim_store_enable_in_memory_cache(
     nvat_corim_store_t store,
     uint64_t           max_size_bytes,
     time_t             ttl_seconds
 );
 
-void nvat_corim_store_free(nvat_corim_store_t* store);
+NVAT_API void nvat_corim_store_free(nvat_corim_store_t* store);
 
 /** @} corim_store */
 
@@ -1894,7 +1911,7 @@ typedef struct nvat_local_corim_verifier_st* nvat_local_corim_verifier_t;
  * @param ocsp_client Revocation collaborator. NULL means no revocation
  *        checking.
  */
-nvat_rc_t nvat_local_corim_verifier_create(
+NVAT_API nvat_rc_t nvat_local_corim_verifier_create(
     nvat_local_corim_verifier_t* out_verifier,
     nvat_corim_store_t* corim_store,
     nvat_ocsp_client_t ocsp_client
@@ -1927,7 +1944,7 @@ nvat_rc_t nvat_local_corim_verifier_create(
  * TODO: future signature also takes @ref nvat_evidence_policy_t. RP policy
  * is out of scope here.
  */
-nvat_rc_t nvat_local_corim_verifier_verify_cmw(
+NVAT_API nvat_rc_t nvat_local_corim_verifier_verify_cmw(
     const nvat_local_corim_verifier_t verifier,
     const uint8_t* cmw_data,
     size_t cmw_len,
@@ -1948,7 +1965,7 @@ nvat_rc_t nvat_local_corim_verifier_verify_cmw(
  * — intended for development against unsigned fixtures, never for
  * production.
  */
-nvat_rc_t nvat_local_corim_verifier_set_verify_rim_signature(
+NVAT_API nvat_rc_t nvat_local_corim_verifier_set_verify_rim_signature(
     nvat_local_corim_verifier_t verifier,
     bool enabled
 );
@@ -1961,7 +1978,7 @@ nvat_rc_t nvat_local_corim_verifier_set_verify_rim_signature(
  * since CoEV signing can lag CoRIM signing in a given deployment. Verification
  * is enabled by default; disabling it is never appropriate in production.
  */
-nvat_rc_t nvat_local_corim_verifier_set_verify_coev_signature(
+NVAT_API nvat_rc_t nvat_local_corim_verifier_set_verify_coev_signature(
     nvat_local_corim_verifier_t verifier,
     bool enabled
 );
@@ -1974,7 +1991,7 @@ nvat_rc_t nvat_local_corim_verifier_set_verify_coev_signature(
  * including DTI ECTs and akpub. The result remains unverified and
  * contraindicated. Disable only for development fixtures.
  */
-nvat_rc_t nvat_local_corim_verifier_set_verify_evidence_signature(
+NVAT_API nvat_rc_t nvat_local_corim_verifier_set_verify_evidence_signature(
     nvat_local_corim_verifier_t verifier,
     bool enabled
 );
@@ -1988,7 +2005,7 @@ nvat_rc_t nvat_local_corim_verifier_set_verify_evidence_signature(
  * responder URL from the certificate's Authority Information Access
  * extension. When disabled, chains are treated as not revoked.
  */
-nvat_rc_t nvat_local_corim_verifier_set_verify_revocation(
+NVAT_API nvat_rc_t nvat_local_corim_verifier_set_verify_revocation(
     nvat_local_corim_verifier_t verifier,
     bool enabled
 );
@@ -2004,7 +2021,7 @@ nvat_rc_t nvat_local_corim_verifier_set_verify_revocation(
  * @param coev_data Raw bytes of a #6.571-tagged ConciseEvidence blob.
  * @param coev_len Length of @p coev_data in bytes.
  */
-nvat_rc_t nvat_local_corim_verifier_set_backup_spdm_coev(
+NVAT_API nvat_rc_t nvat_local_corim_verifier_set_backup_spdm_coev(
     nvat_local_corim_verifier_t verifier,
     const uint8_t* coev_data,
     size_t coev_len
@@ -2019,7 +2036,7 @@ nvat_rc_t nvat_local_corim_verifier_set_backup_spdm_coev(
  * @param verifier Handle from @ref nvat_local_corim_verifier_create.
  * @param uri Null-terminated RIM locator URI string.
  */
-nvat_rc_t nvat_local_corim_verifier_add_backup_rim_locator(
+NVAT_API nvat_rc_t nvat_local_corim_verifier_add_backup_rim_locator(
     nvat_local_corim_verifier_t verifier,
     const char* uri
 );
@@ -2047,7 +2064,7 @@ typedef enum {
  * @param algs     Array of hash algorithm identifiers.
  * @param num_algs Number of elements in @p algs.
  */
-nvat_rc_t nvat_local_corim_verifier_set_default_hash_algorithms(
+NVAT_API nvat_rc_t nvat_local_corim_verifier_set_default_hash_algorithms(
     nvat_local_corim_verifier_t verifier,
     const nvat_hash_algorithm_t* algs,
     size_t num_algs
@@ -2070,7 +2087,7 @@ nvat_rc_t nvat_local_corim_verifier_set_default_hash_algorithms(
  * @return @ref NVAT_RC_BAD_ARGUMENT for a NULL argument, num_roots == 0 or an
  *         unparseable certificate.
  */
-nvat_rc_t nvat_local_corim_verifier_set_device_identity_roots(
+NVAT_API nvat_rc_t nvat_local_corim_verifier_set_device_identity_roots(
     nvat_local_corim_verifier_t verifier,
     const char* const* root_cert_pems,
     size_t num_roots
@@ -2105,7 +2122,7 @@ typedef struct nvat_byte_buf_st* nvat_byte_buf_t;
  * @param data Bytes to copy. May be NULL only when @p len is 0.
  * @param len Number of bytes in @p data.
  */
-nvat_rc_t nvat_byte_buf_create(
+NVAT_API nvat_rc_t nvat_byte_buf_create(
     nvat_byte_buf_t* out_buf,
     const uint8_t* data,
     size_t len
@@ -2114,7 +2131,7 @@ nvat_rc_t nvat_byte_buf_create(
 /**
  * @brief Free a buffer and set *buf to NULL. Safe on NULL.
  */
-void nvat_byte_buf_free(nvat_byte_buf_t* buf);
+NVAT_API void nvat_byte_buf_free(nvat_byte_buf_t* buf);
 
 /**
  * @brief Kind of collateral requested through an @ref nvat_collateral_cb_t.
@@ -2200,9 +2217,9 @@ typedef nvat_rc_t (*nvat_collateral_cb_t)(
  */
 typedef struct nvat_verify_call_options_st* nvat_verify_call_options_t;
 
-nvat_rc_t nvat_verify_call_options_create(nvat_verify_call_options_t* out_options);
+NVAT_API nvat_rc_t nvat_verify_call_options_create(nvat_verify_call_options_t* out_options);
 
-void nvat_verify_call_options_free(nvat_verify_call_options_t* options);
+NVAT_API void nvat_verify_call_options_free(nvat_verify_call_options_t* options);
 
 /**
  * @brief Install the collateral callback for calls using these options.
@@ -2217,7 +2234,7 @@ void nvat_verify_call_options_free(nvat_verify_call_options_t* options);
  *
  * @param user_data Opaque pointer handed back to every callback invocation.
  */
-nvat_rc_t nvat_verify_call_options_set_collateral_callback(
+NVAT_API nvat_rc_t nvat_verify_call_options_set_collateral_callback(
     nvat_verify_call_options_t options,
     nvat_collateral_cb_t callback,
     void* user_data
@@ -2231,7 +2248,7 @@ nvat_rc_t nvat_verify_call_options_set_collateral_callback(
  * this to false; with true, they are reported ocsp_nonce_matches = false and the
  * evidence is contraindicated.
  */
-nvat_rc_t nvat_verify_call_options_set_require_ocsp_nonce(
+NVAT_API nvat_rc_t nvat_verify_call_options_set_require_ocsp_nonce(
     nvat_verify_call_options_t options,
     bool require_nonce
 );
@@ -2245,7 +2262,7 @@ nvat_rc_t nvat_verify_call_options_set_require_ocsp_nonce(
  * one hour after its thisUpdate. thisUpdate itself is not compared with the
  * verification time.
  */
-nvat_rc_t nvat_verify_call_options_set_enforce_ocsp_next_update(
+NVAT_API nvat_rc_t nvat_verify_call_options_set_enforce_ocsp_next_update(
     nvat_verify_call_options_t options,
     bool enforce_next_update
 );
@@ -2260,7 +2277,7 @@ nvat_rc_t nvat_verify_call_options_set_enforce_ocsp_next_update(
  * periods; expiry is reported per certificate.) The EAR's own iat/nbf/exp
  * always use the system clock.
  */
-nvat_rc_t nvat_verify_call_options_set_verification_time(
+NVAT_API nvat_rc_t nvat_verify_call_options_set_verification_time(
     nvat_verify_call_options_t options,
     int64_t epoch_seconds
 );
@@ -2289,7 +2306,7 @@ nvat_rc_t nvat_verify_call_options_set_verification_time(
  * @param out_ear_json Receives the unsigned EAR JSON. Free with @ref nvat_str_free.
  *        May be NULL.
  */
-nvat_rc_t nvat_local_corim_verifier_verify_cmw_ex(
+NVAT_API nvat_rc_t nvat_local_corim_verifier_verify_cmw_ex(
     const nvat_local_corim_verifier_t verifier,
     const uint8_t* cmw_data,
     size_t cmw_len,
@@ -2300,13 +2317,9 @@ nvat_rc_t nvat_local_corim_verifier_verify_cmw_ex(
     nvat_str_t* out_ear_json
 );
 
-void nvat_local_corim_verifier_free(nvat_local_corim_verifier_t* verifier);
+NVAT_API void nvat_local_corim_verifier_free(nvat_local_corim_verifier_t* verifier);
 
 /** @} local_corim_verifier */
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC visibility pop
-#endif
 
 #ifdef __cplusplus
 }

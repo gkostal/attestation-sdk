@@ -478,7 +478,7 @@ Error X509CertChain::calculate_min_expiration_time(time_t& out_min_expiration_ti
             return Error::InternalError;
         }
         
-        time_t cert_expiration = timegm(&tm_expiration);
+        time_t cert_expiration = timegm_utc(&tm_expiration);
         if (cert_expiration < min_expiration_time) {
             min_expiration_time = cert_expiration;
             valid_expiration_found = true;
@@ -769,7 +769,7 @@ Error X509CertChain::generate_per_cert_status(const OcspVerifyOptions& ocsp_opti
             return Error::InternalError;
         }
 
-        time_t cert_expiration = timegm(&tm_exp);
+        time_t cert_expiration = timegm_utc(&tm_exp);
         if (format_time(cert_expiration, out_statuses[i].expiration_date) != Error::Ok) {
             LOG_ERROR("Failed to format cert expiration time at index " << i);
             return Error::InternalError;

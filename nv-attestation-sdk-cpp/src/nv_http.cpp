@@ -114,6 +114,13 @@ bool is_safe_service_key_target(const std::string& url) {
         if (!m_options.tls_ca_path.empty()) {
             curl_easy_setopt(curl_handle.get(), CURLOPT_CAPATH, m_options.tls_ca_path.c_str());
         }
+#ifdef _WIN32
+        // libcurl with OpenSSL has no CA bundle on Windows: unless the caller names one, trust the
+        // Windows certificate store.
+        if (m_options.tls_ca_cert.empty() && m_options.tls_ca_path.empty()) {
+            curl_easy_setopt(curl_handle.get(), CURLOPT_SSL_OPTIONS, static_cast<long>(CURLSSLOPT_NATIVE_CA));
+        }
+#endif
 
         curl_easy_setopt(curl_handle.get(), CURLOPT_URL, request.url.c_str());
 
