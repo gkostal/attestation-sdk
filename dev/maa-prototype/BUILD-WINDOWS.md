@@ -46,7 +46,8 @@ parallelism low.
 
 1. Finds Visual Studio and imports its x64 environment, and uses Visual Studio's vcpkg (or `-VcpkgRoot` / `VCPKG_ROOT`).
 2. Stages the shared fixtures: captures the live OCSP responses, converts the two Rubin CoRIMs from `.diag`, copies the
-   golden CMW.
+   golden CMW. If the bundle already has the Linux library, its fixtures are kept instead: the Linux `manifest.json` lists
+   them, and a new OCSP capture would not match it.
 3. Unless `-SkipTests`: builds NVAT as a **static** library with its unit tests (`<WorkDir>\test`) and runs them with
    `windows\run-unit-tests.ps1` (see below).
 4. Builds **`nvat.dll`** (`<WorkDir>\bundle`): Release, `/MD`, a PDB, OpenSSL / curl / libxml2 / xmlsec / zlib from
@@ -57,7 +58,8 @@ parallelism low.
    - the imports are only Windows system DLLs, the Universal CRT and the Visual C++ runtime;
    - it is x64 with ASLR (high entropy), NX, Control Flow Guard and CET shadow-stack compatibility;
    - it references its PDB.
-6. Stages `include\nvat.h` and `lib\win-x64\{nvat.dll,nvat.lib,nvat.pdb}`.
+6. Stages `include\nvat.h` (with LF line endings, so it is byte for byte the header the Linux build writes) and
+   `lib\win-x64\{nvat.dll,nvat.lib,nvat.pdb}`.
 7. Builds `selftest\smoke.c` against `nvat.lib` and runs it offline for every verdict scenario of the Linux self-test
    (`affirming`, `ocsp-missing`, `ocsp-revoked`, `corim-missing`, `ocsp-expired-enforced`, `ocsp-expired-not-enforced`;
    EARs checked by `selftest\check_ear.py`), plus:
@@ -77,7 +79,7 @@ lib\win-x64\nvat.lib                 import library
 lib\win-x64\nvat.pdb
 win-x64\symbols\{exports,dependents}.txt, headers.txt
 win-x64\selftest\smoke.exe, smoke.c, check_ear.py, ear-<scenario>.json, <scenario>.log
-win-x64\build-info.json, win-x64\manifest.json
+win-x64\build-info.json, win-x64\manifest.json, win-x64\BUILD-WINDOWS.md
 fixtures\...                         shared with the Linux bundle
 ```
 

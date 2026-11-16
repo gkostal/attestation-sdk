@@ -96,9 +96,10 @@ Write-Host "NVAT $NvatBranch @ $NvatCommit (dirty: $NvatDirty)"
 Write-Host "bundle -> $OutDir"
 
 # Stale generated files go; the captured OCSP responses stay as the offline cache. The Windows library
-# (lib\win-x64\, win-x64\; build-bundle-windows.ps1) is left alone.
+# (lib\win-x64\, win-x64\; build-bundle-windows.ps1) is left alone. BUILD-WINDOWS.md: earlier Windows builds put
+# it here; it now lives in win-x64\.
 foreach ($stale in 'include', 'lib\linux-x64', 'symbols', 'selftest', 'fixtures\corim', 'fixtures\cmw', 'ldd.txt',
-                   'build-info.json', 'manifest.json', 'README.md') {
+                   'build-info.json', 'manifest.json', 'README.md', 'BUILD-WINDOWS.md') {
     Remove-Item -Recurse -Force (Join-Path $OutDir $stale) -ErrorAction SilentlyContinue
 }
 

@@ -11,21 +11,23 @@
        copy unless -VcpkgRoot / VCPKG_ROOT name another);
     2. stages the shared fixtures: captures live NVIDIA OCSP responses (falling back to earlier
        captures when offline), converts the Rubin CoRIMs from CBOR diagnostic notation, copies the
-       golden CMW;
+       golden CMW. When the bundle already has the Linux library, its fixtures are kept: the Linux
+       manifest.json lists them, and a new OCSP capture would not match it;
     3. unless -SkipTests: builds NVAT as a static library with its unit tests and runs them
        (windows\run-unit-tests.ps1);
     4. builds nvat.dll (Release, OpenSSL / curl / libxml2 / xmlsec / zlib from vcpkg, statically
        linked; PDB; CFG, Spectre, CET) and gates it with windows\check_dll.py: only the functions of
        nvat.h are exported, only system / CRT DLLs are imported, the hardening flags are set;
-    5. stages include\nvat.h and lib\win-x64\{nvat.dll,nvat.lib,nvat.pdb};
+    5. stages include\nvat.h (with LF line endings, byte for byte the header the Linux build writes)
+       and lib\win-x64\{nvat.dll,nvat.lib,nvat.pdb};
     6. builds the C self-test (selftest\smoke.c) and runs it offline for every verdict scenario, plus
        one with OPENSSL_CONF pointing at a configuration that would break NVAT's OpenSSL (it must be
        ignored) and one with the host's own OpenSSL (-HostOpenSslDll) loaded in the same process;
     7. writes win-x64\build-info.json and win-x64\manifest.json.
 
 .PARAMETER OutDir
-    Bundle directory, shared with the Linux bundle (only the Windows files and the shared fixtures
-    and header are replaced).
+    Bundle directory, shared with the Linux bundle (only the Windows files, the header and, without a
+    Linux library in it, the shared fixtures are replaced).
 
 .PARAMETER WorkDir
     Build trees and the vcpkg installation (default C:\src\nvat-win). Keep the path short: vcpkg and
@@ -93,23 +95,31 @@ Write-Host "vcpkg $VcpkgRoot"
 Write-Host "NVAT $NvatBranch @ $NvatCommit (dirty: $NvatDirty)"
 Write-Host "bundle -> $OutDir, build trees -> $WorkDir"
 
-foreach ($stale in $WinOut, $LibOut, (Join-Path $OutDir 'fixtures\corim'), (Join-Path $OutDir 'fixtures\cmw')) {
+# The Linux manifest.json lists the shared fixtures, so with the Linux library present they are kept as they are.
+$linuxBundled = Test-Path (Join-Path $OutDir 'manifest.json')
+$stales = @($WinOut, $LibOut)
+if (-not $linuxBundled) { $stales += (Join-Path $OutDir 'fixtures\corim'), (Join-Path $OutDir 'fixtures\cmw') }
+foreach ($stale in $stales) {
     Remove-Item -Recurse -Force $stale -ErrorAction SilentlyContinue
 }
 New-Item -ItemType Directory -Force $WinOut, $LibOut, (Join-Path $WinOut 'selftest'), (Join-Path $WinOut 'symbols') | Out-Null
 
 # --- fixtures (shared with the Linux bundle) ---------------------------------------------------
-Write-Step 'Capture OCSP responses (live; falls back to earlier captures when offline)'
 $OcspIndex = Join-Path $OutDir 'fixtures\ocsp-index.json'
-Invoke-Native 'python' @((Join-Path $ScriptDir 'capture_ocsp.py'), '--out-dir', (Join-Path $OutDir 'fixtures\ocsp'),
-                         '--revoked-dir', (Join-Path $OutDir 'fixtures\ocsp-revoked'), '--index', $OcspIndex)
+if ($linuxBundled) {
+    Write-Step 'Fixtures: kept from the Linux bundle (its manifest.json lists them)'
+} else {
+    Write-Step 'Capture OCSP responses (live; falls back to earlier captures when offline)'
+    Invoke-Native 'python' @((Join-Path $ScriptDir 'capture_ocsp.py'), '--out-dir', (Join-Path $OutDir 'fixtures\ocsp'),
+                             '--revoked-dir', (Join-Path $OutDir 'fixtures\ocsp-revoked'), '--index', $OcspIndex)
 
-Write-Step 'CoRIM and CMW fixtures'
-# Named by the canonical RIM id of their rim-locator, i.e. the CORIM collateral lookup key.
-New-Item -ItemType Directory -Force (Join-Path $OutDir 'fixtures\corim'), (Join-Path $OutDir 'fixtures\cmw') | Out-Null
-Convert-CborDiag (Join-Path $TestData 'sample_rims\corim\rubin_vbios_example.diag') (Join-Path $OutDir 'fixtures\corim\GR100_081D_9900230000.cbor')
-Convert-CborDiag (Join-Path $TestData 'sample_rims\corim\rubin_driver_example.diag') (Join-Path $OutDir 'fixtures\corim\NV_GPU_DRIVER_GR100_620.54.cbor')
-Copy-Item (Join-Path $TestData 'sample_attestation_data\rubin_evidence.cmw.json') (Join-Path $OutDir 'fixtures\cmw\rubin_evidence.cmw.json')
+    Write-Step 'CoRIM and CMW fixtures'
+    # Named by the canonical RIM id of their rim-locator, i.e. the CORIM collateral lookup key.
+    New-Item -ItemType Directory -Force (Join-Path $OutDir 'fixtures\corim'), (Join-Path $OutDir 'fixtures\cmw') | Out-Null
+    Convert-CborDiag (Join-Path $TestData 'sample_rims\corim\rubin_vbios_example.diag') (Join-Path $OutDir 'fixtures\corim\GR100_081D_9900230000.cbor')
+    Convert-CborDiag (Join-Path $TestData 'sample_rims\corim\rubin_driver_example.diag') (Join-Path $OutDir 'fixtures\corim\NV_GPU_DRIVER_GR100_620.54.cbor')
+    Copy-Item (Join-Path $TestData 'sample_attestation_data\rubin_evidence.cmw.json') (Join-Path $OutDir 'fixtures\cmw\rubin_evidence.cmw.json')
+}
 
 # --- unit tests --------------------------------------------------------------------------------
 $commonCMakeArgs = @(
@@ -150,7 +160,9 @@ Invoke-Native 'cmake' @('--build', $bundleBuild, '--parallel', "$Jobs")
 Write-Step 'Verify exports / dependencies / hardening and stage the library'
 New-Item -ItemType Directory -Force (Join-Path $OutDir 'include') | Out-Null
 $header = Join-Path $OutDir 'include\nvat.h'
-Copy-Item (Join-Path $bundleBuild 'include\nvat.h') $header -Force
+# LF line endings: the header the Linux build writes into the same bundle, byte for byte.
+$headerText = [IO.File]::ReadAllText((Join-Path $bundleBuild 'include\nvat.h')).Replace("`r`n", "`n")
+[IO.File]::WriteAllText($header, $headerText, [Text.UTF8Encoding]::new($false))
 foreach ($file in 'nvat.dll', 'nvat.lib', 'nvat.pdb') {
     Copy-Item (Join-Path $bundleBuild $file) (Join-Path $LibOut $file) -Force
 }
@@ -226,8 +238,11 @@ if ($failed.Count -gt 0) { throw "self-test scenarios failed: $($failed -join ',
 Get-Content (Join-Path $smokeDir 'host-openssl.log') -ErrorAction SilentlyContinue | Select-String 'host OpenSSL'
 
 # --- build info + manifest ---------------------------------------------------------------------
-Copy-Item (Join-Path $ScriptDir 'README.md') (Join-Path $OutDir 'README.md') -Force
-Copy-Item (Join-Path $ScriptDir 'BUILD-WINDOWS.md') (Join-Path $OutDir 'BUILD-WINDOWS.md') -Force
+# README.md is shared; the Linux manifest.json lists it, so with the Linux library present it is kept as it is.
+if (-not $linuxBundled) {
+    Copy-Item (Join-Path $ScriptDir 'README.md') (Join-Path $OutDir 'README.md') -Force
+}
+Copy-Item (Join-Path $ScriptDir 'BUILD-WINDOWS.md') (Join-Path $WinOut 'BUILD-WINDOWS.md') -Force
 
 Write-Step 'Write win-x64\build-info.json and win-x64\manifest.json'
 $installed = Join-Path $WorkDir "vcpkg_installed\$Triplet"
