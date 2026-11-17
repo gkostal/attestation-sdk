@@ -118,6 +118,9 @@ On Windows `USE_SYSTEM_DEPS` defaults to `ON` (the dependencies must come from a
 
 ## What the Windows port changed in NVAT
 
+Why each change was made this way, and what remains before it can be proposed upstream:
+[WINDOWS-PORT-PROPOSAL.md](./WINDOWS-PORT-PROPOSAL.md).
+
 | Area | Change |
 | --- | --- |
 | Public header | `NVAT_API` on every function of `nvat.h`: `dllexport` while building the DLL (`NVAT_EXPORTS`), `dllimport` for consumers, default visibility on GCC/Clang (replacing the `#pragma GCC visibility` block), nothing for static builds (`NVAT_STATIC`). |
